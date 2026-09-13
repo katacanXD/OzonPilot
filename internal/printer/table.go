@@ -64,7 +64,7 @@ func PrintSummaryTable(rows []domain.ProductSupplyRow, selectedClusters []string
 	fmt.Fprintln(w, separator)
 
 	for _, r := range rows {
-		line := fmt.Sprintf("%s\t%d", truncate(r.OfferID, 25), r.CurrentFBS)
+		line := fmt.Sprintf("%s\t%d", truncate(r.OfferID, 40), r.CurrentFBS)
 		for _, c := range selectedClusters {
 			cd := r.ClusterData[c]
 			line += fmt.Sprintf("\t%.2f | %d / %d", cd.DailySales, cd.StockFBO, cd.Supply)
