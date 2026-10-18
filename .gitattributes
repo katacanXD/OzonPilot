@@ -1,0 +1,29 @@
+# Единые окончания строк: на Windows git по умолчанию делает CRLF,
+# из-за этого в диффах появляется шум.
+* text=auto
+
+# Исходники и документация — LF
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+
+# Windows-скрипты должны оставаться с CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Бинарные файлы — без преобразований
+*.exe binary
+*.dll binary
+*.xlsx binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.ico binary

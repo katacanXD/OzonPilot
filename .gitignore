@@ -1,0 +1,51 @@
+# --- ОС и редакторы ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Логи и временные файлы ---
+*.log
+*.tmp
+*.temp
+*.bak
+*.bak-*
+
+# --- Секреты и локальная конфигурация ---
+# Настоящие ключи лежат в %APPDATA%\CLIForOZON\config.yaml, но файл,
+# случайно скопированный в проект, не должен уехать в репозиторий.
+.env
+.env.*
+config.yaml
+config.yml
+
+# --- Сборка и артефакты ---
+*.exe
+*.dll
+*.so
+*.dylib
+/OzonPilot
+/ozon-cli
+reports/
+*.xlsx
+*.docx
+coverage.out
+*.pprof
+
+# --- Python (генераторы документации) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Node (.build-docx) ---
+node_modules/
+
+# --- Локальные папки проверки ---
+.analysis/
+.check/
+.verify*/
+.smoke/
+
+# Важно: .github/ НЕ игнорируем — иначе на GitHub не попадут workflows
+# и шаблоны репозитория.

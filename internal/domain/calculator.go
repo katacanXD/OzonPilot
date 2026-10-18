@@ -4,15 +4,14 @@ import (
 	"math"
 )
 
-// CalculateProductRow формирует расчет по товару с учетом кластерных продаж.
 func CalculateProductRow(
 	offerID, name string,
 	fbsStock int,
 	fboClusters map[string]int,
 	clusterSales map[string]float64, // продажи конкретно по каждому кластеру
+	periodSales map[string]float64,
 	selectedClusters []string,
 	targetDays int,
-	useFBS bool,
 	leadTimeDays float64,
 ) ProductSupplyRow {
 	clusterData := make(map[string]ClusterStockData, len(selectedClusters))
@@ -23,7 +22,8 @@ func CalculateProductRow(
 
 	for _, cluster := range selectedClusters {
 		stockFBO := fboClusters[cluster]
-		sales := clusterSales[cluster] // Скорость продаж именно в этом кластере
+		sales := clusterSales[cluster]
+		periodSalesForCluster := periodSales[cluster]
 		totalSales += sales
 
 		if stockFBO > 0 {
@@ -34,12 +34,7 @@ func CalculateProductRow(
 		safetyStock := sales * leadTimeDays
 		targetStock := (sales * float64(targetDays)) + safetyStock
 
-		available := float64(stockFBO)
-		if useFBS {
-			available += float64(fbsStock)
-		}
-
-		deficit := targetStock - available
+		deficit := targetStock - float64(stockFBO)
 		recSupply := 0
 		if deficit > 0 {
 			recSupply = int(math.Ceil(deficit))
@@ -48,9 +43,10 @@ func CalculateProductRow(
 
 		totalSupply += recSupply
 		clusterData[cluster] = ClusterStockData{
-			DailySales: sales,
-			StockFBO:   stockFBO,
-			Supply:     recSupply,
+			PeriodSales: periodSalesForCluster,
+			DailySales:  sales,
+			StockFBO:    stockFBO,
+			Supply:      recSupply,
 		}
 	}
 

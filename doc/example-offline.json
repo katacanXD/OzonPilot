@@ -1,0 +1,64 @@
+[
+  {
+    "OfferID": "FILTER-AIR-01",
+    "Name": "Фильтр воздушный",
+    "TotalSales": 30,
+    "CurrentFBS": 2,
+    "ClusterData": {
+      "Москва": { "PeriodSales": 20, "DailySales": 0.71, "StockFBO": 4, "Supply": 32 },
+      "Санкт-Петербург": { "PeriodSales": 10, "DailySales": 0.36, "StockFBO": 0, "Supply": 11 }
+    },
+    "TotalSupply": 43,
+    "OverallStatus": "NEEDS_FBO",
+    "Priority": 2,
+    "PlacementInfo": "Платно",
+    "TotalFBOStock": 4,
+    "TotalPeriodSales": 30,
+    "StorageCost": 1250.4,
+    "StorageForecast": 940.0,
+    "OzonStorageForecast28": 0,
+    "OzonStorageForecastMonth": 0,
+    "HasOzonStorageForecast": false
+  },
+  {
+    "OfferID": "BRAKE-PAD-02",
+    "Name": "Колодки передние",
+    "TotalSales": 0,
+    "CurrentFBS": 0,
+    "ClusterData": {
+      "Москва": { "PeriodSales": 0, "DailySales": 0, "StockFBO": 0, "Supply": 0 },
+      "Санкт-Петербург": { "PeriodSales": 0, "DailySales": 0, "StockFBO": 0, "Supply": 0 }
+    },
+    "TotalSupply": 0,
+    "OverallStatus": "OK",
+    "Priority": 4,
+    "PlacementInfo": "",
+    "TotalFBOStock": 0,
+    "TotalPeriodSales": 0,
+    "StorageCost": 0,
+    "StorageForecast": 0,
+    "OzonStorageForecast28": 0,
+    "OzonStorageForecastMonth": 0,
+    "HasOzonStorageForecast": false
+  },
+  {
+    "OfferID": "LUGGAGE-RACK-03",
+    "Name": "Багажник усиленный",
+    "TotalSales": 56,
+    "CurrentFBS": 0,
+    "ClusterData": {
+      "Москва": { "PeriodSales": 56, "DailySales": 2.0, "StockFBO": 0, "Supply": 56 }
+    },
+    "TotalSupply": 56,
+    "OverallStatus": "OUT_OF_STOCK",
+    "Priority": 1,
+    "PlacementInfo": "",
+    "TotalFBOStock": 0,
+    "TotalPeriodSales": 56,
+    "StorageCost": 1429.0,
+    "StorageForecast": 0,
+    "OzonStorageForecast28": 0,
+    "OzonStorageForecastMonth": 0,
+    "HasOzonStorageForecast": false
+  }
+]

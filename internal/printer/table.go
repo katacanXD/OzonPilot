@@ -3,7 +3,6 @@ package printer
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -16,19 +15,7 @@ func PrintSummaryTable(rows []domain.ProductSupplyRow, selectedClusters []string
 		return
 	}
 
-	// Сортировка:
-	// 1. Приоритет группы (OUT_OF_STOCK -> NEEDS_FBO -> NEEDS_FBS -> OK)
-	// 2. Суммарная потребность в поставке (TotalSupply)
-	// 3. Суммарные продажи по выбранным кластерам (TotalSales)
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].Priority != rows[j].Priority {
-			return rows[i].Priority < rows[j].Priority
-		}
-		if rows[i].TotalSupply != rows[j].TotalSupply {
-			return rows[i].TotalSupply > rows[j].TotalSupply
-		}
-		return rows[i].TotalSales > rows[j].TotalSales
-	})
+	sortRows(rows)
 
 	var outOfStock, needsFBO, needsFBS int
 	for _, r := range rows {
@@ -49,28 +36,53 @@ func PrintSummaryTable(rows []domain.ProductSupplyRow, selectedClusters []string
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-	// Динамический заголовок
-	header := "АРТИКУЛ\tFBS"
-	separator := "-------\t---"
-	for _, c := range selectedClusters {
-		shortName := truncate(c, 35)
-		header += fmt.Sprintf("\t%s (СПРОС | ОСТ / ПОСТ)", shortName)
-		separator += "\t--------------------------------"
-	}
-	header += "\tИТОГО ПОСТАВКА\tСТАТУС"
-	separator += "\t--------------\t------"
-
-	fmt.Fprintln(w, header)
-	fmt.Fprintln(w, separator)
-
+	hasOzonForecast := false
 	for _, r := range rows {
-		line := fmt.Sprintf("%s\t%d", truncate(r.OfferID, 40), r.CurrentFBS)
+		if r.HasOzonStorageForecast {
+			hasOzonForecast = true
+			break
+		}
+	}
+
+	var header, separator strings.Builder
+	header.WriteString("АРТИКУЛ\tFBS\tРАЗМЕЩЕНИЕ\tСПИСАНО (₽)")
+	separator.WriteString("-------\t---\t----------\t-----------")
+	if hasOzonForecast {
+		header.WriteString("\tПРОГНОЗ OZON 28 ДН (₽)\tДО КОНЦА МЕСЯЦА (₽)")
+		separator.WriteString("\t--------------------\t--------------------")
+	} else {
+		header.WriteString(fmt.Sprintf("\tОЦЕНКА (%d ДН, ₽)", domain.DefaultStorageForecastDays))
+		separator.WriteString("\t-----------------")
+	}
+	for _, c := range selectedClusters {
+		fmt.Fprintf(&header, "\t%s (ПРОДАЖИ | ОСТ / ПОСТ)", truncate(c, 35))
+		separator.WriteString("\t------------------------")
+	}
+	header.WriteString("\tСТАТУС")
+	separator.WriteString("\t------")
+
+	fmt.Fprintln(w, header.String())
+	fmt.Fprintln(w, separator.String())
+
+	var line strings.Builder
+	for _, r := range rows {
+		line.Reset()
+		placement := r.PlacementInfo
+		if placement == "" {
+			placement = "-"
+		}
+		fmt.Fprintf(&line, "%s\t%d\t%s\t%.2f", truncate(r.OfferID, 30), r.CurrentFBS, truncate(placement, 22), r.StorageCost)
+		if hasOzonForecast {
+			fmt.Fprintf(&line, "\t%.2f\t%.2f", r.OzonStorageForecast28, r.OzonStorageForecastMonth)
+		} else {
+			fmt.Fprintf(&line, "\t%.2f", r.StorageForecast)
+		}
 		for _, c := range selectedClusters {
 			cd := r.ClusterData[c]
-			line += fmt.Sprintf("\t%.2f | %d / %d", cd.DailySales, cd.StockFBO, cd.Supply)
+			fmt.Fprintf(&line, "\t%.0f | %d / %d", cd.PeriodSales, cd.StockFBO, cd.Supply)
 		}
-		line += fmt.Sprintf("\t%d\t%s", r.TotalSupply, r.OverallStatus)
-		fmt.Fprintln(w, line)
+		fmt.Fprintf(&line, "\t%s", r.OverallStatus)
+		fmt.Fprintln(w, line.String())
 	}
 
 	_ = w.Flush()
