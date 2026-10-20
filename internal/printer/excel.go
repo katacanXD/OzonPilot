@@ -216,18 +216,6 @@ func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, pl
 		return "", fmt.Errorf("не удалось включить фильтры Excel: %w", err)
 	}
 
-	// Закрепляем титул с заголовками и колонку с артикулом.
-	if err := file.SetPanes(sheet, &excelize.Panes{
-		Freeze:      true,
-		Split:       false,
-		XSplit:      1,
-		YSplit:      headerRow,
-		TopLeftCell: "B4",
-		ActivePane:  "bottomRight",
-	}); err != nil {
-		return "", fmt.Errorf("не удалось закрепить заголовок Excel: %w", err)
-	}
-
 	if err := setLayout(file, selectedClusters, lastColumn, baseCount); err != nil {
 		return "", err
 	}
