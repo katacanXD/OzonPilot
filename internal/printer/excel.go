@@ -713,10 +713,10 @@ func statusTint(status string) cellTint {
 }
 
 func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCount int) error {
-	// Узкими (8) сделаны все колонки с числами, кроме артикула (A), размещения
-	// (C) и статуса: там длинный текст, и им нужно место.
+	// Узкие числовые колонки — 8; под деньги (D и E) отведено 10, чтобы суммы
+	// не обрезались; A, C и «Статус» шире — там длинный текст.
 	const narrowWidth = 8.0
-	widths := map[string]float64{"A": 24, "B": narrowWidth, "C": 20, "D": narrowWidth, "E": narrowWidth}
+	widths := map[string]float64{"A": 24, "B": narrowWidth, "C": 20, "D": 10, "E": 10}
 	if baseCount == baseColumnsOzon {
 		widths["F"] = narrowWidth
 	}

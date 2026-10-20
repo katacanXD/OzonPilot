@@ -416,7 +416,7 @@ func TestExportToExcelLayout(t *testing.T) {
 		t.Fatalf("ColumnNumberToName: %v", err)
 	}
 	widths := map[string]float64{
-		"A": 24, "B": 8, "C": 20, "D": 8, "E": 8,
+		"A": 24, "B": 8, "C": 20, "D": 10, "E": 10,
 		statusColumn: 13,
 	}
 	for column, want := range widths {
