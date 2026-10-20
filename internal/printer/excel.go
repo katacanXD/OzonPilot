@@ -481,11 +481,13 @@ func buildHeaders(clusters []string, baseCount int) []string {
 	} else {
 		headers = append(headers, fmt.Sprintf("Оценка хранения за %d дн. (₽)", domain.DefaultStorageForecastDays))
 	}
-	for _, cluster := range clusters {
+	for range clusters {
 		headers = append(headers,
-			fmt.Sprintf("Заказано в кластер %s за период (шт)", cluster),
-			fmt.Sprintf("Остаток FBO %s", cluster),
-			fmt.Sprintf("Поставка FBO %s", cluster),
+			// Кластер уже подписан в полосе групп выше, поэтому в заголовках
+			// колонок его имя не повторяется — так шапка читается компактнее.
+			"Продажи за период FBS и FBO",
+			"Остаток FBO",
+			"Поставка FBO",
 		)
 	}
 	return append(headers, "Статус")
@@ -805,7 +807,7 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 
 	if err := writeRow(
 		"КЛАСТЕРЫ — ЦВЕТ БЛОКА КОЛОНОК",
-		"Заказано в кластер · Остаток FBO · Поставка FBO. Заказы считаются по кластеру назначения (куда уехал товар) и включают FBO + FBS",
+		"Продажи за период FBS и FBO · Остаток FBO · Поставка FBO. Продажи считаются по кластеру назначения (куда уехал товар) и включают FBO + FBS",
 		section,
 	); err != nil {
 		return err
@@ -813,7 +815,7 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 	for i, cluster := range clusters {
 		palette := paletteFor(i)
 		label := cellSpec{fill: palette.header, font: colorWhite, align: "left", bold: true}
-		if err := writeRow(cluster, "Заказано в кластер · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
+		if err := writeRow(cluster, "Продажи за период FBS и FBO · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
 			return err
 		}
 	}

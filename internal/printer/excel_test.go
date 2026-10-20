@@ -281,7 +281,7 @@ func TestExportToExcelOzonForecastColumns(t *testing.T) {
 	if header[3] != "Списано за хранение (₽)" || header[4] != "Прогноз Ozon на 28 дн. (₽)" || header[5] != "Прогноз Ozon до конца месяца (₽)" {
 		t.Errorf("колонки прогноза Ozon не на своих местах: %v", header)
 	}
-	if header[6] != "Заказано в кластер Москва за период (шт)" {
+	if header[6] != "Продажи за период FBS и FBO" {
 		t.Errorf("блок кластера должен начинаться с седьмой колонки: %v", header)
 	}
 	if header[9] != "Статус" {
