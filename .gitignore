@@ -40,6 +40,7 @@ venv/
 
 # --- Node (.build-docx) ---
 node_modules/
+.build-docx
 
 # --- Локальные папки проверки ---
 .analysis/
@@ -47,5 +48,4 @@ node_modules/
 .verify*/
 .smoke/
 
-# Важно: .github/ НЕ игнорируем — иначе на GitHub не попадут workflows
-# и шаблоны репозитория.
+.github/copilot-instructions.md
