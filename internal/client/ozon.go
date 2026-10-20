@@ -918,6 +918,7 @@ type salesStats struct {
 	units         float64
 	unmapped      int
 	unmappedUnits float64
+	cancelled     int
 	warehouses    map[string]bool
 	byCluster     map[string]float64
 }
@@ -1023,69 +1024,76 @@ func (c *OzonClient) DebugOfferPostings(ctx context.Context, windowDays int) {
 	since := now.AddDate(0, 0, -sweepDays)
 	windowStart := now.AddDate(0, 0, -windowDays)
 
-	for _, method := range []struct {
-		path   string
-		scheme string
-	}{
-		{pathPostingFBOList, "FBO"},
-		{pathPostingFBSList, "FBS"},
-		{pathPostingFBSListLegacy, "FBS(v3)"},
-	} {
-		cursor, offset, found := "", 0, 0
-		for page := 1; page <= maxPostingPages; page++ {
-			var req postingListReq
-			req.Dir = "ASC"
-			req.Filter.Since = since.Format("2006-01-02T15:04:05Z")
-			req.Filter.To = now.Format("2006-01-02T15:04:05Z")
-			req.Limit = 100
-			req.Cursor = cursor
-			req.Offset = offset
-			req.With.AnalyticsData = true
-			req.With.FinancialData = true
+	c.debugOfferScan(ctx, target, pathPostingFBOList, "FBO", since, now, windowStart)
 
-			var resp postingListResp
-			if err := c.sendRequest(ctx, method.path, req, &resp); err != nil {
-				slog.Warn("Диагностика артикула: метод недоступен", "схема", method.scheme, "err", err)
-				break
-			}
-
-			items, hasNext, nextCursor := resp.page()
-			for _, post := range items {
-				for _, prod := range post.Products {
-					if strings.ToLower(strings.TrimSpace(prod.OfferID)) != target {
-						continue
-					}
-					found++
-					slog.Info("Диагностика артикула: отправление",
-						"схема", method.scheme,
-						"номер", post.PostingNumber,
-						"статус", post.Status,
-						"создано", post.CreatedAt,
-						"в_окне_отчёта", postingInWindow(post, windowStart),
-						"отгрузка", post.FinancialData.ClusterFrom,
-						"назначение", post.FinancialData.ClusterTo,
-						"склад", post.AnalyticsData.WarehouseName,
-						"артикул_в_отправлении", prod.OfferID,
-						"sku", prod.SKU,
-						"шт", prod.Quantity)
-				}
-			}
-
-			if !hasNext {
-				break
-			}
-			if nextCursor != "" && nextCursor != cursor {
-				cursor = nextCursor
-				continue
-			}
-			if len(items) == 0 {
-				break
-			}
-			offset += len(items)
-		}
-		slog.Info("Диагностика артикула завершена",
-			"артикул", c.debugOffer, "схема", method.scheme, "найдено_отправлений", found)
+	// FBS смотрим в /v4; старый /v3 дергаем только если v4 не ответил —
+	// иначе это лишние запросы и риск поймать 429.
+	if _, err := c.debugOfferScan(ctx, target, pathPostingFBSList, "FBS", since, now, windowStart); err != nil {
+		c.debugOfferScan(ctx, target, pathPostingFBSListLegacy, "FBS(v3)", since, now, windowStart)
 	}
+}
+
+// debugOfferScan листает один метод и печатает отправления нужного артикула.
+func (c *OzonClient) debugOfferScan(ctx context.Context, target, path, scheme string, since, now, windowStart time.Time) (int, error) {
+	cursor, offset, found := "", 0, 0
+	var lastErr error
+
+	for page := 1; page <= maxPostingPages; page++ {
+		var req postingListReq
+		req.Dir = "ASC"
+		req.Filter.Since = since.Format("2006-01-02T15:04:05Z")
+		req.Filter.To = now.Format("2006-01-02T15:04:05Z")
+		req.Limit = 100
+		req.Cursor = cursor
+		req.Offset = offset
+		req.With.AnalyticsData = true
+		req.With.FinancialData = true
+
+		var resp postingListResp
+		if err := c.sendRequest(ctx, path, req, &resp); err != nil {
+			slog.Warn("Диагностика артикула: метод недоступен", "схема", scheme, "err", err)
+			lastErr = err
+			break
+		}
+
+		items, hasNext, nextCursor := resp.page()
+		for _, post := range items {
+			for _, prod := range post.Products {
+				if strings.ToLower(strings.TrimSpace(prod.OfferID)) != target {
+					continue
+				}
+				found++
+				slog.Info("Диагностика артикула: отправление",
+					"схема", scheme,
+					"номер", post.PostingNumber,
+					"статус", post.Status,
+					"создано", post.CreatedAt,
+					"в_окне_отчёта", postingInWindow(post, windowStart),
+					"отгрузка", post.FinancialData.ClusterFrom,
+					"назначение", post.FinancialData.ClusterTo,
+					"склад", post.AnalyticsData.WarehouseName,
+					"артикул_в_отправлении", prod.OfferID,
+					"sku", prod.SKU,
+					"шт", prod.Quantity)
+			}
+		}
+
+		if !hasNext {
+			break
+		}
+		if nextCursor != "" && nextCursor != cursor {
+			cursor = nextCursor
+			continue
+		}
+		if len(items) == 0 {
+			break
+		}
+		offset += len(items)
+	}
+
+	slog.Info("Диагностика артикула завершена",
+		"артикул", c.debugOffer, "схема", scheme, "найдено_отправлений", found)
+	return found, lastErr
 }
 
 // postingInWindow сообщает, попадает ли отправление в окно отчёта.
@@ -1179,8 +1187,10 @@ func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, wind
 		}
 
 		for _, post := range items {
+			// Отменённые заказы тоже считаем: показатель кабинета «Заказано
+			// товаров» их включает, иначе цифры расходятся на отменах.
 			if strings.EqualFold(post.Status, "cancelled") {
-				continue
+				stats.cancelled++
 			}
 
 			stats.postings++
@@ -1265,6 +1275,7 @@ func logSalesStats(s salesStats) {
 		"схема", s.scheme,
 		"отправлений", s.postings,
 		"штук", s.units,
+		"из_них_отменённых", s.cancelled,
 		"без_кластера", s.unmapped,
 		"по_кластерам", strings.Join(tally, ", "))
 }
