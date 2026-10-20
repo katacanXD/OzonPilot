@@ -231,6 +231,47 @@ func TestLoadSalesByDestinationCluster(t *testing.T) {
 	}
 }
 
+// Ozon отключил /v3/posting/fbs/list: если /v4 недоступен, заказы FBS должны
+// подхватываться старым методом, иначе они молча выпадут из кластеров.
+func TestLoadSalesFallsBackToV3FBS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case pathPostingFBOList:
+			_, _ = w.Write([]byte(`{"postings":[],"has_next":false}`))
+		case pathPostingFBSList:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"not found"}`))
+		case pathPostingFBSListLegacy:
+			_, _ = w.Write([]byte(`{"result":{"postings":[
+				{"posting_number":"FBS-1","status":"delivered",
+				 "financial_data":{"cluster_to":"Москва, МО и Дальние регионы"},
+				 "products":[{"sku":111,"offer_id":"A-1","quantity":2}]}
+			],"has_next":false}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	productsMap := map[string]*RawProductData{
+		"A-1": {
+			OfferID:      "A-1",
+			SKU:          "111",
+			FBOClusters:  map[string]int{},
+			ClusterSales: map[string]float64{},
+			PeriodSales:  map[string]float64{},
+		},
+	}
+
+	c := newTestClient(srv.URL)
+	if err := c.loadSalesVelocityByCluster(context.Background(), 28, productsMap, map[string]string{}); err != nil {
+		t.Fatalf("loadSalesVelocityByCluster: %v", err)
+	}
+	if got := productsMap["A-1"].PeriodSales["Москва"]; got != 2 {
+		t.Errorf("заказов FBS в Москву = %v, ожидалось 2 через резервный /v3", got)
+	}
+}
+
 func TestAnalyticsStocksResponseParsing(t *testing.T) {
 	raw := `{"items":[
 		{"sku":111,"offer_id":"A-1","name":"Товар","warehouse_name":"ХОРУГВИНО_РФЦ","cluster_name":"Москва, МО и Дальние регионы","available_stock_count":7},

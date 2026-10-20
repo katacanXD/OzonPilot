@@ -52,7 +52,7 @@
 | 3 | `/v1/analytics/stocks` | `available_stock_count` по `sku` × склад + `cluster_name` | 100 SKU | критично (fail-fast) |
 | 4 | `/v4/product/info/stocks` | FBS: `present` для `type == "fbs"` | 100 артикулов | критично |
 | 5 | `/v3/posting/fbo/list` | отправления FBO за окно `-prodazhi`: `cluster_from` / `cluster_to`, товары и количество | 100 (курсор/offset) | критично |
-| 6 | `/v3/posting/fbs/list` | отправления FBS за то же окно — вторая половина заказов | 100 (курсор/offset) | не критично (warn) |
+| 6 | `/v4/posting/fbs/list` | отправления FBS за то же окно — вторая половина заказов | 100 (курсор/offset) | не критично (warn) |
 | 7 | `/v1/report/placement/by-products/create` + `/v1/report/info` | отчёт о стоимости размещения | — | не критично (warn) |
 
 Почему именно так:
@@ -115,7 +115,7 @@ Ozon называет московский кластер «Москва, МО �
 
 Окно: `[сейчас − prodazhi дней; сейчас]` в UTC, формат `2006-01-02T15:04:05Z` — как период в кабинете.
 
-- Запрашиваются обе схемы: `/v3/posting/fbo/list` и `/v3/posting/fbs/list`, с `with.analytics_data` и `with.financial_data`.
+- Запрашиваются обе схемы: `/v3/posting/fbo/list` и `/v4/posting/fbs/list`, с `with.analytics_data` и `with.financial_data`.
 - Отправления со статусом `cancelled` пропускаются.
 - Кластер отправления определяется так: `financial_data.cluster_to` (куда уехал товар) → `analytics_data.cluster_to` → `cluster_from` → карта «склад → кластер» → резервный матчер по названию склада. Это соответствует разрезу «Кластер отгрузки → Товары» в кабинете.
 - Каждая позиция отправления (`offer_id`, при отсутствии — `sku`) увеличивает счётчик своего кластера — так заказы FBO и FBS складываются в одну цифру по кластеру.

@@ -56,11 +56,15 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // Пути методов Ozon. Держим их рядом, чтобы троттлинг и запросы использовали
 // один и тот же ключ.
 const (
-	pathProductList                     = "/v3/product/list"
-	pathProductInfoList                 = "/v3/product/info/list"
-	pathAnalyticsStocks                 = "/v1/analytics/stocks"
-	pathPostingFBOList                  = "/v3/posting/fbo/list"
-	pathPostingFBSList                  = "/v3/posting/fbs/list"
+	pathProductList     = "/v3/product/list"
+	pathProductInfoList = "/v3/product/info/list"
+	pathAnalyticsStocks = "/v1/analytics/stocks"
+	pathPostingFBOList  = "/v3/posting/fbo/list"
+	// /v3/posting/fbs/list Ozon отключает, актуальный метод — /v4. Формат ответа
+	// у v4 плоский (postings в корне) и пагинация курсорная, но разбор умеет
+	// оба варианта, поэтому v3 остается как резерв.
+	pathPostingFBSList                  = "/v4/posting/fbs/list"
+	pathPostingFBSListLegacy            = "/v3/posting/fbs/list"
 	pathProductInfoStocks               = "/v4/product/info/stocks"
 	pathReportPlacementByProductsCreate = "/v1/report/placement/by-products/create"
 	pathReportInfo                      = "/v1/report/info"
@@ -910,6 +914,7 @@ type salesStats struct {
 	unmapped      int
 	unmappedUnits float64
 	warehouses    map[string]bool
+	byCluster     map[string]float64
 }
 
 // resolveSalesCluster определяет кластер заказа: сначала кластер назначения
@@ -970,6 +975,10 @@ func (c *OzonClient) loadSalesVelocityByCluster(ctx context.Context, windowDays 
 	// собственного склада. Сбой FBS не должен ронять весь расчет.
 	fbs, fbsErr := c.collectSalesWithFallback(ctx, pathPostingFBSList, "FBS", windowDays, productsMap, warehouseToCluster)
 	if fbsErr != nil {
+		slog.Warn("Не удалось получить отправления FBS через /v4 — пробую /v3", "err", fbsErr)
+		fbs, fbsErr = c.collectSalesWithFallback(ctx, pathPostingFBSListLegacy, "FBS", windowDays, productsMap, warehouseToCluster)
+	}
+	if fbsErr != nil {
 		slog.Warn("Не удалось получить отправления FBS — заказы посчитаны только по FBO", "err", fbsErr)
 	}
 
@@ -996,6 +1005,11 @@ func (c *OzonClient) collectSalesWithFallback(ctx context.Context, path, scheme 
 	if err == nil {
 		return stats, nil
 	}
+	// 404 и 5xx означают «метода нет / сервис недоступен» — повтор без
+	// financial_data тут не поможет. 400 — похоже на неподдерживаемый параметр.
+	if !strings.Contains(err.Error(), "status 400") {
+		return stats, err
+	}
 	slog.Warn("Метод отправлений не принял financial_data — повтор без него", "схема", scheme, "метод", path, "err", err)
 	return c.collectSales(ctx, path, scheme, windowDays, productsMap, warehouseToCluster, false)
 }
@@ -1011,7 +1025,11 @@ type salesEntry struct {
 // collectSales листает список отправлений одной схемы и раскладывает заказы
 // по кластерам назначения.
 func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, windowDays int, productsMap map[string]*RawProductData, warehouseToCluster map[string]string, financialData bool) (salesStats, error) {
-	stats := salesStats{scheme: scheme, warehouses: make(map[string]bool)}
+	stats := salesStats{
+		scheme:     scheme,
+		warehouses: make(map[string]bool),
+		byCluster:  make(map[string]float64),
+	}
 	var entries []salesEntry
 
 	now := time.Now().UTC()
@@ -1046,6 +1064,15 @@ func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, wind
 		}
 
 		items, hasNext, nextCursor := resp.page()
+
+		// В -debug показываем одно реальное отправление: по нему видно, какие
+		// кластеры и склад Ozon вернул на самом деле.
+		if page == 1 && len(items) > 0 && slog.Default().Enabled(ctx, slog.LevelDebug) {
+			if raw, err := json.Marshal(items[0]); err == nil {
+				slog.Debug("Пример отправления Ozon", "схема", scheme, "json", string(raw))
+			}
+		}
+
 		for _, post := range items {
 			if strings.EqualFold(post.Status, "cancelled") {
 				continue
@@ -1100,6 +1127,7 @@ func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, wind
 		}
 		entry.product.PeriodSales[entry.cluster] += entry.qty
 		c.salesClusters[entry.cluster] = true
+		stats.byCluster[entry.cluster] += entry.qty
 	}
 
 	return stats, nil
@@ -1122,11 +1150,18 @@ func logSalesStats(s salesStats) {
 			"штук_без_кластера", s.unmappedUnits,
 			"примеры_складов", strings.Join(sample, ", "))
 	}
+	tally := make([]string, 0, len(s.byCluster))
+	for name, qty := range s.byCluster {
+		tally = append(tally, fmt.Sprintf("%s=%.0f", name, qty))
+	}
+	sort.Strings(tally)
+
 	slog.Info("Заказы загружены",
 		"схема", s.scheme,
 		"отправлений", s.postings,
 		"штук", s.units,
-		"без_кластера", s.unmapped)
+		"без_кластера", s.unmapped,
+		"по_кластерам", strings.Join(tally, ", "))
 }
 
 func (c *OzonClient) loadFBSStocksChunk(ctx context.Context, chunk []string, productsMap, offerIndex map[string]*RawProductData) error {
