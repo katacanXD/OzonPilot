@@ -14,19 +14,27 @@ import (
 )
 
 const (
-	sheetName   = "Поставки"
-	legendSheet = "Легенда"
+	sheetName    = "Поставки"
+	summarySheet = "Общая информация"
+	legendSheet  = "Легенда"
 
-	titleRow     = 1
-	groupRow     = 2
-	headerRow    = 3
-	firstDataRow = 4
+	// Титул со сводкой живет на отдельном листе «Общая информация», поэтому
+	// на «Поставках» сверху сразу идут полоса групп и заголовки: их закрепляем,
+	// а данные начинаются с третьей строки.
+	groupRow     = 1
+	headerRow    = 2
+	firstDataRow = 3
 
 	// Колонки до блоков кластеров: артикул, остаток FBS, размещение, прошлые
 	// списания и прогноз. Прогноз бывает двух видов: собственный прогноз Ozon
 	// из выгрузки ЛК (две колонки) или оценка программы (одна колонка).
 	baseColumnsEstimate = 5
 	baseColumnsOzon     = 6
+
+	// Заголовки колонок узкие и многострочные, поэтому шрифт мельче данных:
+	// иначе строка заголовков занимает пол-экрана.
+	headerFontSize = 9.0
+	dataFontSize   = 10.0
 
 	colorTitle      = "1F3864" // тёмно-синий: титул отчета
 	colorBaseHeader = "2F5597" // синий: заголовки общих колонок
@@ -71,17 +79,15 @@ type storageKind int
 const (
 	storagePaid storageKind = iota
 	storageFree
-	storageFreeUntil
 	storageNone // товара нет на складах FBO
 	storageUnknown
 )
 
 var storageTints = map[storageKind]cellTint{
-	storagePaid:      {fill: "FFC7CE", font: "9C0006"}, // платно — красный
-	storageFree:      {fill: "C6EFCE", font: "006100"}, // бесплатно — зелёный
-	storageFreeUntil: {fill: "FFEB9C", font: "9C6500"}, // бесплатно до даты — жёлтый
-	storageNone:      {fill: "EDEDED", font: "808080"}, // размещения нет — серый
-	storageUnknown:   {fill: colorWhite, font: "000000"},
+	storagePaid:    {fill: "FFC7CE", font: "9C0006"}, // платно — красный
+	storageFree:    {fill: "C6EFCE", font: "006100"}, // бесплатно — зелёный
+	storageNone:    {fill: "EDEDED", font: "808080"}, // размещения нет — серый
+	storageUnknown: {fill: colorWhite, font: "000000"},
 }
 
 var statusTints = map[string]cellTint{
@@ -93,15 +99,16 @@ var statusTints = map[string]cellTint{
 
 // classifyStorage определяет статус платного хранения по тексту из отчёта Ozon.
 // Проверка «бесплатн» обязана идти первой: в слове «бесплатно» есть подстрока «платно».
+//
+// Любое бесплатное размещение — зелёное. Дата окончания бесплатного периода
+// остаётся в тексте ячейки («Бесплатно (до ДД.ММ.ГГГГ)»), но цвет не меняет:
+// жёлтый читался как «скоро платно» и путал, хотя платного тарифа ещё нет.
 func classifyStorage(placement string) storageKind {
 	text := strings.ToLower(strings.TrimSpace(placement))
 	switch {
 	case text == "" || text == "-" || strings.Contains(text, "нет"):
 		return storageNone
 	case strings.Contains(text, "бесплатн"):
-		if strings.Contains(text, "до") {
-			return storageFreeUntil
-		}
 		return storageFree
 	case strings.Contains(text, "платн"):
 		return storagePaid
@@ -165,8 +172,10 @@ func (c *styleCache) id(spec cellSpec) (int, error) {
 
 // ExportToExcel сохраняет результаты анализа в Excel-таблицу с готовыми фильтрами.
 // placementNote — непустая строка, если данные о размещении не загрузились:
-// тогда причина попадает в титул и на лист «Легенда».
-func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, placementNote string) (string, error) {
+// тогда причина попадает на лист «Общая информация» и в «Легенду».
+// windowDays — окно продаж: попадает в сводку, чтобы цифры отчета можно было
+// сверить с кабинетом.
+func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, placementNote string, windowDays int) (string, error) {
 	if len(rows) == 0 {
 		return "", fmt.Errorf("нет данных для экспорта")
 	}
@@ -197,13 +206,25 @@ func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, pl
 
 	styles := &styleCache{file: file, cache: make(map[cellSpec]int)}
 
-	if err := writeHeaders(file, styles, sheet, selectedClusters, columnCount, baseCount, lastColumn, titleText(rows, placementNote)); err != nil {
+	if err := writeHeaders(file, styles, sheet, selectedClusters, columnCount, baseCount); err != nil {
 		return "", err
 	}
 
 	specs := buildColumnSpecs(selectedClusters, columnCount, baseCount)
 	if err := writeDataRows(file, styles, sheet, rows, selectedClusters, specs, baseCount); err != nil {
 		return "", err
+	}
+
+	// Закрепляем полосу групп и заголовки: данные начинаются с третьей строки.
+	if err := file.SetPanes(sheet, &excelize.Panes{
+		Freeze:      true,
+		Split:       false,
+		XSplit:      0,
+		YSplit:      headerRow,
+		TopLeftCell: "A3",
+		ActivePane:  "bottomLeft",
+	}); err != nil {
+		return "", fmt.Errorf("не удалось закрепить верхние строки Excel: %w", err)
 	}
 
 	showRowStripes := false
@@ -232,6 +253,10 @@ func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, pl
 	}
 	if err := file.SetSheetProps(sheet, &excelize.SheetPropsOptions{FitToPage: &fitToPage}); err != nil {
 		return "", fmt.Errorf("не удалось включить вписывание при печати Excel: %w", err)
+	}
+
+	if err := writeSummarySheet(file, styles, rows, selectedClusters, windowDays, placementNote); err != nil {
+		return "", err
 	}
 
 	if err := writeLegend(file, styles, selectedClusters, baseCount == baseColumnsOzon, placementNote); err != nil {
@@ -273,53 +298,141 @@ func baseColumnCount(rows []domain.ProductSupplyRow) int {
 	return baseColumnsEstimate
 }
 
-func titleText(rows []domain.ProductSupplyRow, placementNote string) string {
-	paid, outOfStock := 0, 0
-	spent, forecast, forecastMonth, soldOutSpent := 0.0, 0.0, 0.0, 0.0
-	hasOzon := false
-	for _, row := range rows {
-		if classifyStorage(row.PlacementInfo) == storagePaid {
-			paid++
-		}
-		if row.OverallStatus == domain.StatusOutOfStock {
-			outOfStock++
-		}
-		spent += row.StorageCost
-		if row.TotalFBOStock == 0 {
-			soldOutSpent += row.StorageCost
-		}
-		if row.HasOzonStorageForecast {
-			hasOzon = true
-		}
-		forecast += row.OzonStorageForecast28
-		forecastMonth += row.OzonStorageForecastMonth
-	}
-
-	spentPart := fmt.Sprintf("списано за хранение: %s ₽", formatRub(spent))
-	if soldOutSpent > 0 {
-		// Без этой оговорки сумма расходится с личным кабинетом: там позиции,
-		// снятые с FBO, в список размещения не попадают.
-		spentPart += fmt.Sprintf(" (из них без остатка на FBO: %s ₽)", formatRub(soldOutSpent))
-	}
-
-	forecastPart := fmt.Sprintf("оценка хранения за %d дн.: %s ₽", domain.DefaultStorageForecastDays, formatRub(estimateSum(rows)))
-	if hasOzon {
-		forecastPart = fmt.Sprintf("прогноз Ozon: %s ₽ на 28 дн., %s ₽ до конца месяца", formatRub(forecast), formatRub(forecastMonth))
-	}
-
-	return fmt.Sprintf(
-		"Сводка поставок Ozon · %s · позиций: %d · платное хранение: %d · %s · %s · закончилось: %d",
-		time.Now().Format("02.01.2006 15:04"), len(rows), paid, spentPart, forecastPart, outOfStock,
-	) + placementSuffix(placementNote)
+// reportSummary — цифры сводки. Раньше они стояли одной длинной строкой над
+// таблицей; теперь это лист «Общая информация».
+type reportSummary struct {
+	paid, outOfStock        int
+	spent, soldOutSpent     float64
+	forecast, forecastMonth float64
+	hasOzonForecast         bool
 }
 
-// placementSuffix дописывает в титул предупреждение, если отчет о размещении
-// не загрузился: иначе пустые колонки хранения читаются как «ничего не списали».
-func placementSuffix(note string) string {
-	if strings.TrimSpace(note) == "" {
-		return ""
+func summarize(rows []domain.ProductSupplyRow) reportSummary {
+	var s reportSummary
+	for _, row := range rows {
+		if classifyStorage(row.PlacementInfo) == storagePaid {
+			s.paid++
+		}
+		if row.OverallStatus == domain.StatusOutOfStock {
+			s.outOfStock++
+		}
+		s.spent += row.StorageCost
+		if row.TotalFBOStock == 0 {
+			s.soldOutSpent += row.StorageCost
+		}
+		if row.HasOzonStorageForecast {
+			s.hasOzonForecast = true
+		}
+		s.forecast += row.OzonStorageForecast28
+		s.forecastMonth += row.OzonStorageForecastMonth
 	}
-	return " · ВНИМАНИЕ: " + note
+	return s
+}
+
+// writeSummarySheet создает лист «Общая информация»: сводка в виде таблицы
+// «Параметр — Значение» понятнее длинной строки и не занимает место над данными.
+func writeSummarySheet(
+	file *excelize.File,
+	styles *styleCache,
+	rows []domain.ProductSupplyRow,
+	clusters []string,
+	windowDays int,
+	placementNote string,
+) error {
+	if _, err := file.NewSheet(summarySheet); err != nil {
+		return fmt.Errorf("не удалось создать лист «Общая информация»: %w", err)
+	}
+
+	titleSpec := cellSpec{fill: colorTitle, font: colorWhite, align: "left", size: 14, bold: true}
+	if err := file.SetCellValue(summarySheet, "A1", "Сводка отчёта о поставках Ozon"); err != nil {
+		return fmt.Errorf("не удалось записать заголовок сводки: %w", err)
+	}
+	if err := file.MergeCell(summarySheet, "A1", "B1"); err != nil {
+		return fmt.Errorf("не удалось объединить заголовок сводки: %w", err)
+	}
+	if err := applyStyle(file, styles, summarySheet, "A1", "B1", titleSpec); err != nil {
+		return err
+	}
+	if err := file.SetRowHeight(summarySheet, 1, 26); err != nil {
+		return fmt.Errorf("не удалось настроить высоту строки сводки: %w", err)
+	}
+
+	if err := file.SetColWidth(summarySheet, "A", "A", 42); err != nil {
+		return fmt.Errorf("не удалось настроить ширину сводки: %w", err)
+	}
+	if err := file.SetColWidth(summarySheet, "B", "B", 72); err != nil {
+		return fmt.Errorf("не удалось настроить ширину сводки: %w", err)
+	}
+
+	headerSpec := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "left", bold: true}
+	if err := file.SetCellValue(summarySheet, "A3", "Параметр"); err != nil {
+		return fmt.Errorf("не удалось записать заголовок сводки: %w", err)
+	}
+	if err := file.SetCellValue(summarySheet, "B3", "Значение"); err != nil {
+		return fmt.Errorf("не удалось записать заголовок сводки: %w", err)
+	}
+	if err := applyStyle(file, styles, summarySheet, "A3", "B3", headerSpec); err != nil {
+		return err
+	}
+
+	s := summarize(rows)
+	items := []struct{ label, value string }{
+		{"Дата и время отчёта", time.Now().Format("02.01.2006 15:04")},
+		{"Позиций в отчёте", fmt.Sprintf("%d", len(rows))},
+		{"Кластеры в отчёте", strings.Join(clusters, ", ")},
+		{"Окно продаж, дней", fmt.Sprintf("%d", windowDays)},
+		{"Платное хранение, шт", fmt.Sprintf("%d", s.paid)},
+		{"Списано за хранение, ₽", formatRub(s.spent)},
+	}
+	if s.soldOutSpent > 0 {
+		// Без этой оговорки сумма расходится с личным кабинетом: там позиции,
+		// снятые с FBO, в список размещения не попадают.
+		items = append(items, struct{ label, value string }{
+			"из них без остатка на FBO, ₽",
+			formatRub(s.soldOutSpent),
+		})
+	}
+	if s.hasOzonForecast {
+		items = append(items,
+			struct{ label, value string }{"Прогноз Ozon на 28 дн., ₽", formatRub(s.forecast)},
+			struct{ label, value string }{"Прогноз Ozon до конца месяца, ₽", formatRub(s.forecastMonth)},
+		)
+	} else {
+		items = append(items, struct{ label, value string }{
+			fmt.Sprintf("Оценка хранения за %d дн., ₽", domain.DefaultStorageForecastDays),
+			formatRub(estimateSum(rows)),
+		})
+	}
+	items = append(items, struct{ label, value string }{
+		"Закончилось (OUT_OF_STOCK), шт",
+		fmt.Sprintf("%d", s.outOfStock),
+	})
+	if strings.TrimSpace(placementNote) == "" {
+		items = append(items, struct{ label, value string }{"Данные о размещении", "получены из Ozon"})
+	} else {
+		items = append(items, struct{ label, value string }{"Данные о размещении", "ВНИМАНИЕ: " + placementNote})
+	}
+
+	labelSpec := cellSpec{fill: colorWhite, font: "000000", align: "left", bold: true}
+	valueSpec := cellSpec{fill: colorWhite, font: "000000", align: "left"}
+	for i, item := range items {
+		row := 4 + i
+		labelCell := fmt.Sprintf("A%d", row)
+		valueCell := fmt.Sprintf("B%d", row)
+		if err := file.SetCellValue(summarySheet, labelCell, item.label); err != nil {
+			return fmt.Errorf("не удалось записать строку сводки: %w", err)
+		}
+		if err := file.SetCellValue(summarySheet, valueCell, item.value); err != nil {
+			return fmt.Errorf("не удалось записать строку сводки: %w", err)
+		}
+		if err := applyStyle(file, styles, summarySheet, labelCell, labelCell, labelSpec); err != nil {
+			return err
+		}
+		if err := applyStyle(file, styles, summarySheet, valueCell, valueCell, valueSpec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // estimateSum суммирует собственную оценку хранения: она нужна в титуле,
@@ -370,7 +483,7 @@ func buildHeaders(clusters []string, baseCount int) []string {
 	}
 	for _, cluster := range clusters {
 		headers = append(headers,
-			fmt.Sprintf("Продажи %s за период (шт)", cluster),
+			fmt.Sprintf("Заказано в кластер %s за период (шт)", cluster),
 			fmt.Sprintf("Остаток FBO %s", cluster),
 			fmt.Sprintf("Поставка FBO %s", cluster),
 		)
@@ -385,33 +498,24 @@ func writeHeaders(
 	clusters []string,
 	columnCount int,
 	baseCount int,
-	lastColumn string,
-	title string,
 ) error {
-	if err := file.SetCellValue(sheet, "A1", title); err != nil {
-		return fmt.Errorf("не удалось записать заголовок Excel: %w", err)
-	}
-	if err := file.MergeCell(sheet, "A1", lastColumn+"1"); err != nil {
-		return fmt.Errorf("не удалось объединить заголовок Excel: %w", err)
-	}
-	titleSpec := cellSpec{fill: colorTitle, font: colorWhite, align: "left", size: 14, bold: true}
-	if err := applyStyle(file, styles, sheet, "A1", lastColumn+"1", titleSpec); err != nil {
-		return err
-	}
-
 	// Полоса групп: общий блок колонок и отдельный блок на каждый кластер.
-	if err := file.SetCellValue(sheet, "A2", "Товар · остаток · хранение"); err != nil {
+	bandCell, err := excelize.CoordinatesToCellName(1, groupRow)
+	if err != nil {
+		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
+	}
+	if err := file.SetCellValue(sheet, bandCell, "Товар · остаток · хранение"); err != nil {
 		return fmt.Errorf("не удалось записать заголовок группы Excel: %w", err)
 	}
-	baseLast, err := excelize.ColumnNumberToName(baseCount)
+	bandTo, err := excelize.CoordinatesToCellName(baseCount, groupRow)
 	if err != nil {
-		return fmt.Errorf("не удалось определить колонку Excel: %w", err)
+		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
 	}
-	if err := file.MergeCell(sheet, "A2", baseLast+"2"); err != nil {
+	if err := file.MergeCell(sheet, bandCell, bandTo); err != nil {
 		return fmt.Errorf("не удалось объединить заголовок группы Excel: %w", err)
 	}
-	baseBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "left", bold: true}
-	if err := applyStyle(file, styles, sheet, "A2", baseLast+"2", baseBand); err != nil {
+	baseBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "left", bold: true, size: headerFontSize}
+	if err := applyStyle(file, styles, sheet, bandCell, bandTo, baseBand); err != nil {
 		return err
 	}
 
@@ -444,7 +548,7 @@ func writeHeaders(
 		if err := file.MergeCell(sheet, from, to); err != nil {
 			return fmt.Errorf("не удалось объединить заголовок кластера Excel: %w", err)
 		}
-		band := cellSpec{fill: paletteFor(i).header, font: colorWhite, align: "center", bold: true}
+		band := cellSpec{fill: paletteFor(i).header, font: colorWhite, align: "center", bold: true, size: headerFontSize}
 		if err := applyStyle(file, styles, sheet, from, to, band); err != nil {
 			return err
 		}
@@ -455,12 +559,16 @@ func writeHeaders(
 	for i, header := range headers {
 		headerValues[i] = header
 	}
-	if err := file.SetSheetRow(sheet, "A3", &headerValues); err != nil {
+	headerStart, err := excelize.CoordinatesToCellName(1, headerRow)
+	if err != nil {
+		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
+	}
+	if err := file.SetSheetRow(sheet, headerStart, &headerValues); err != nil {
 		return fmt.Errorf("не удалось записать заголовки Excel: %w", err)
 	}
 
 	for col := 1; col <= columnCount; col++ {
-		spec := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "center", bold: true}
+		spec := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "center", bold: true, size: headerFontSize}
 		switch {
 		case col == columnCount:
 			spec.fill = colorTitle
@@ -507,6 +615,13 @@ func buildColumnSpecs(clusters []string, columnCount, baseCount int) []cellSpec 
 	}
 
 	specs[columnCount] = cellSpec{fill: colorWhite, font: "000000", align: "center", bold: true}
+
+	// Данные мельче заголовков: колонки кластеров узкие, а строк много.
+	for i := 1; i <= columnCount; i++ {
+		if specs[i].size == 0 {
+			specs[i].size = dataFontSize
+		}
+	}
 	return specs
 }
 
@@ -596,9 +711,9 @@ func statusTint(status string) cellTint {
 }
 
 func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCount int) error {
-	widths := map[string]float64{"A": 30, "B": 12, "C": 26, "D": 22, "E": 24}
+	widths := map[string]float64{"A": 24, "B": 10, "C": 20, "D": 16, "E": 18}
 	if baseCount == baseColumnsOzon {
-		widths["F"] = 24
+		widths["F"] = 18
 	}
 	for column, width := range widths {
 		if err := file.SetColWidth(sheetName, column, column, width); err != nil {
@@ -615,18 +730,18 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		if err != nil {
 			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
 		}
-		if err := file.SetColWidth(sheetName, start, end, 15); err != nil {
+		if err := file.SetColWidth(sheetName, start, end, 13); err != nil {
 			return fmt.Errorf("не удалось настроить ширину столбцов Excel: %w", err)
 		}
 	}
 
-	if err := file.SetColWidth(sheetName, lastColumn, lastColumn, 16); err != nil {
+	if err := file.SetColWidth(sheetName, lastColumn, lastColumn, 13); err != nil {
 		return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 	}
 
-	// Титул в две строки: в нем и сумма прошлых списаний, и прогноз, поэтому
-	// высота 30 обрезала бы текст на узких отчетах.
-	for row, height := range map[int]float64{titleRow: 44, groupRow: 22, headerRow: 46} {
+	// Заголовки многострочные и мелким шрифтом: 30 хватает, а прежние 46
+	// съедали пол-экрана на каждом листе.
+	for row, height := range map[int]float64{groupRow: 18, headerRow: 30} {
 		if err := file.SetRowHeight(sheetName, row, height); err != nil {
 			return fmt.Errorf("не удалось настроить высоту строки Excel: %w", err)
 		}
@@ -688,13 +803,17 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 		return nil
 	}
 
-	if err := writeRow("КЛАСТЕРЫ — ЦВЕТ БЛОКА КОЛОНОК", "Продажи за период · Остаток FBO · Поставка FBO", section); err != nil {
+	if err := writeRow(
+		"КЛАСТЕРЫ — ЦВЕТ БЛОКА КОЛОНОК",
+		"Заказано в кластер · Остаток FBO · Поставка FBO. Заказы считаются по кластеру назначения (куда уехал товар) и включают FBO + FBS",
+		section,
+	); err != nil {
 		return err
 	}
 	for i, cluster := range clusters {
 		palette := paletteFor(i)
 		label := cellSpec{fill: palette.header, font: colorWhite, align: "left", bold: true}
-		if err := writeRow(cluster, "Продажи за период · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
+		if err := writeRow(cluster, "Заказано в кластер · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
 			return err
 		}
 	}
@@ -709,8 +828,7 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 		kind  storageKind
 	}{
 		{"Платно", "Тариф платный: за остаток на FBO начисляется хранение (см. две денежные колонки)", storagePaid},
-		{"Бесплатно (до ДД.ММ.ГГГГ)", "Бесплатное размещение с датой окончания — после неё хранение станет платным", storageFreeUntil},
-		{"Бесплатно", "Бесплатное размещение без даты окончания", storageFree},
+		{"Бесплатно", "Бесплатное размещение; в скобках — дата, когда бесплатный период закончится", storageFree},
 		{"-", "Товара нет на складах FBO: размещения нет, будущих списаний не будет", storageNone},
 	} {
 		if err := writeRow(item.label, item.desc, tint(plain, storageTints[item.kind], true)); err != nil {

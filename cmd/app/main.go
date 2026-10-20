@@ -250,7 +250,7 @@ func main() {
 	// Чтобы вернуть таблицу в консоль, раскомментируйте вызов ниже.
 	// printer.PrintSummaryTable(rows, selectedClusters)
 
-	reportPath, err := printer.ExportToExcel(rows, selectedClusters, placementNote)
+	reportPath, err := printer.ExportToExcel(rows, selectedClusters, placementNote, *windowDaysFlag)
 	if err != nil {
 		slog.Error("Не удалось создать Excel-отчет", "err", err)
 		os.Exit(1)

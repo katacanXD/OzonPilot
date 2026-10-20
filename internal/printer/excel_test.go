@@ -42,7 +42,7 @@ func TestExportToExcelColumns(t *testing.T) {
 	}
 
 	clusters := []string{"Москва", "Санкт-Петербург"}
-	filePath, err := ExportToExcel(rows, clusters, "")
+	filePath, err := ExportToExcel(rows, clusters, "", 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestExportToExcelColumns(t *testing.T) {
 		t.Fatalf("failed to read rows: %v", err)
 	}
 
-	// Заголовки колонок лежат в третьей строке: выше титул и полоса групп.
+	// Заголовки колонок лежат во второй строке: выше только полоса групп.
 	headerRowValues := allRows[headerRow-1]
 	// Check that "Наименование" and "Итого поставка" are not in headerRow
 	for _, h := range headerRowValues {
@@ -106,7 +106,7 @@ func TestExportToExcelColumns(t *testing.T) {
 	}
 
 	// Продажи считаются в штуках: формат целый, без «20,0».
-	salesStyleID, err := f.GetCellStyle(sheetName, "F4")
+	salesStyleID, err := f.GetCellStyle(sheetName, "F3")
 	if err != nil {
 		t.Fatalf("GetCellStyle(F4): %v", err)
 	}
@@ -124,8 +124,8 @@ func TestClassifyStorage(t *testing.T) {
 		// «бесплатно» содержит подстроку «платно», поэтому важен порядок проверок
 		"Платно":                    storagePaid,
 		"Бесплатно":                 storageFree,
-		"Бесплатно (до 15.11.2026)": storageFreeUntil,
-		"бесплатно (до 01.12.2026)": storageFreeUntil,
+		"Бесплатно (до 15.11.2026)": storageFree, // дата в тексте, цвет всё равно зелёный
+		"бесплатно (до 01.12.2026)": storageFree,
 		"":                          storageNone,
 		"-":                         storageNone,
 		"Нет на FBO":                storageNone,
@@ -173,7 +173,7 @@ func TestExportToExcelColors(t *testing.T) {
 	}
 
 	clusters := []string{"Москва", "Санкт-Петербург"}
-	filePath, err := ExportToExcel(rows, clusters, "")
+	filePath, err := ExportToExcel(rows, clusters, "", 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -189,25 +189,25 @@ func TestExportToExcelColors(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	// У каждого кластера своя гамма: заголовок блока и его ячейки данных.
-	moscow := cellFill(t, f, "F4")
-	petersburg := cellFill(t, f, "I4")
+	moscow := cellFill(t, f, "F3")
+	petersburg := cellFill(t, f, "I3")
 	if moscow != strings.ToUpper(paletteFor(0).body) || petersburg != strings.ToUpper(paletteFor(1).body) {
 		t.Errorf("ячейки кластеров окрашены не по своей гамме: Москва=%q, СПб=%q", moscow, petersburg)
 	}
 	if moscow == petersburg {
 		t.Errorf("блоки кластеров должны быть разного цвета, получен %q", moscow)
 	}
-	if got := cellFill(t, f, "F3"); got != strings.ToUpper(paletteFor(0).header) {
+	if got := cellFill(t, f, "F2"); got != strings.ToUpper(paletteFor(0).header) {
 		t.Errorf("заголовок блока Москва окрашен в %q, ожидался %q", got, paletteFor(0).header)
 	}
-	if got := cellFill(t, f, "H4"); got != strings.ToUpper(clusterPalettes[0].accent) {
+	if got := cellFill(t, f, "H3"); got != strings.ToUpper(clusterPalettes[0].accent) {
 		t.Errorf("колонка «Поставка FBO» окрашена в %q, ожидался акцент %q", got, clusterPalettes[0].accent)
 	}
 
 	// Порядок: PAID, SOLD-OUT (оба приоритет 1, артикул PAID раньше), затем FREE.
-	paid := cellFill(t, f, "C4")
-	soldOut := cellFill(t, f, "C5")
-	free := cellFill(t, f, "C6")
+	paid := cellFill(t, f, "C3")
+	soldOut := cellFill(t, f, "C4")
+	free := cellFill(t, f, "C5")
 	if paid == "" || paid == free {
 		t.Errorf("статусы платного и бесплатного хранения должны различаться: платно=%q, бесплатно=%q", paid, free)
 	}
@@ -215,18 +215,18 @@ func TestExportToExcelColors(t *testing.T) {
 		t.Errorf("у распроданного товара размещение должно быть серым: получено %q", soldOut)
 	}
 	// Прошлые списания и прогноз — две отдельные колонки, обе подсвечены.
-	if got := cellFill(t, f, "D4"); got != strings.ToUpper("FFC7CE") {
+	if got := cellFill(t, f, "D3"); got != strings.ToUpper("FFC7CE") {
 		t.Errorf("прошлое списание должно быть подсвечено: получено %q", got)
 	}
-	if got := cellFill(t, f, "E4"); got == "" || got == strings.ToUpper("FF") {
+	if got := cellFill(t, f, "E3"); got == "" || got == strings.ToUpper("FF") {
 		t.Errorf("прогноз хранения должен быть подсвечен: получено %q", got)
 	}
 	// Нулевая оценка не должна получать незаполненный стиль: Excel рисует такие
 	// ячейки ярко-синим, а офисные библиотеки считают файл битым.
-	if got := cellFill(t, f, "E6"); got != strings.ToUpper(colorWhite) {
+	if got := cellFill(t, f, "E5"); got != strings.ToUpper(colorWhite) {
 		t.Errorf("ячейка с нулевой оценкой должна быть белой, получено %q", got)
 	}
-	if got := cellFill(t, f, "E5"); got == strings.ToUpper("FFC7CE") {
+	if got := cellFill(t, f, "E4"); got == strings.ToUpper("FFC7CE") {
 		t.Error("нулевой прогноз хранения не должен выделяться красным")
 	}
 
@@ -254,7 +254,7 @@ func TestExportToExcelOzonForecastColumns(t *testing.T) {
 		},
 	}
 
-	filePath, err := ExportToExcel(rows, []string{"Москва"}, "")
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, "", 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -281,14 +281,14 @@ func TestExportToExcelOzonForecastColumns(t *testing.T) {
 	if header[3] != "Списано за хранение (₽)" || header[4] != "Прогноз Ozon на 28 дн. (₽)" || header[5] != "Прогноз Ozon до конца месяца (₽)" {
 		t.Errorf("колонки прогноза Ozon не на своих местах: %v", header)
 	}
-	if header[6] != "Продажи Москва за период (шт)" {
+	if header[6] != "Заказано в кластер Москва за период (шт)" {
 		t.Errorf("блок кластера должен начинаться с седьмой колонки: %v", header)
 	}
 	if header[9] != "Статус" {
 		t.Errorf("последняя колонка должна быть статусом: %v", header)
 	}
 	// Обе колонки прогноза — деньги, поэтому изменяемые суммы подсвечены.
-	for _, cell := range []string{"E4", "F4"} {
+	for _, cell := range []string{"E3", "F3"} {
 		if got := cellFill(t, f, cell); got == "" {
 			t.Errorf("прогноз в %s должен быть подсвечен", cell)
 		}
@@ -304,7 +304,7 @@ func TestExportToExcelPlacementWarning(t *testing.T) {
 	}}
 	note := "данные о размещении Ozon не получены (таймаут отчета)"
 
-	filePath, err := ExportToExcel(rows, []string{"Москва"}, note)
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, note, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -319,13 +319,21 @@ func TestExportToExcelPlacementWarning(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	allRows, err := f.GetRows(sheetName)
-	if err != nil || len(allRows) == 0 {
-		t.Fatalf("failed to read rows: %v", err)
+	// Титул со сводкой теперь на отдельном листе «Общая информация».
+	summary, err := f.GetRows(summarySheet)
+	if err != nil {
+		t.Fatalf("failed to read summary sheet: %v", err)
 	}
-	title := allRows[0][0]
-	if !strings.Contains(title, "ВНИМАНИЕ") || !strings.Contains(title, note) {
-		t.Errorf("в титуле нет предупреждения о размещении: %q", title)
+	foundNote := false
+	for _, row := range summary {
+		for _, cell := range row {
+			if strings.Contains(cell, "ВНИМАНИЕ") && strings.Contains(cell, note) {
+				foundNote = true
+			}
+		}
+	}
+	if !foundNote {
+		t.Errorf("на листе «Общая информация» нет предупреждения о размещении")
 	}
 
 	legend, err := f.GetRows(legendSheet)
@@ -342,6 +350,81 @@ func TestExportToExcelPlacementWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("на листе «Легенда» нет причины отсутствия данных о размещении")
+	}
+}
+
+func TestExportToExcelLayout(t *testing.T) {
+	rows := []domain.ProductSupplyRow{{
+		OfferID:       "X",
+		OverallStatus: domain.StatusOK,
+		Priority:      4,
+		ClusterData:   map[string]domain.ClusterStockData{"Москва": {PeriodSales: 1, StockFBO: 3}},
+	}}
+
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, "", 28)
+	if err != nil {
+		t.Fatalf("ExportToExcel failed: %v", err)
+	}
+	defer func() {
+		_ = os.Remove(filePath)
+		_ = os.Remove(filepath.Dir(filePath))
+	}()
+
+	f, err := excelize.OpenFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to open generated excel: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	sheets := f.GetSheetList()
+	want := []string{sheetName, summarySheet, legendSheet}
+	if len(sheets) != len(want) {
+		t.Fatalf("листов %d, ожидалось %d: %v", len(sheets), len(want), sheets)
+	}
+	for i := range want {
+		if sheets[i] != want[i] {
+			t.Errorf("лист %d = %q, ожидался %q (порядок: %v)", i, sheets[i], want[i], sheets)
+		}
+	}
+
+	// Закреп — только полоса групп и заголовки: данные листаются целиком.
+	panes, err := f.GetPanes(sheetName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	if !panes.Freeze || panes.YSplit != headerRow || panes.XSplit != 0 || panes.TopLeftCell != "A3" {
+		t.Errorf("закреп должен стоять на строках 1–2 (A3), получено %+v", panes)
+	}
+
+	allRows, err := f.GetRows(sheetName)
+	if err != nil {
+		t.Fatalf("failed to read rows: %v", err)
+	}
+	if got := allRows[groupRow-1][0]; got != "Товар · остаток · хранение" {
+		t.Errorf("в первой строке должна быть полоса групп, получено %q", got)
+	}
+	if got := allRows[headerRow-1][0]; got != "Артикул (OfferID)" {
+		t.Errorf("во второй строке должны быть заголовки, получено %q", got)
+	}
+	if got := allRows[firstDataRow-1][0]; got != "X" {
+		t.Errorf("данные должны начинаться с третьей строки, получено %q", got)
+	}
+
+	// Окно продаж попадает в сводку: по нему цифры сверяются с кабинетом.
+	summary, err := f.GetRows(summarySheet)
+	if err != nil {
+		t.Fatalf("failed to read summary: %v", err)
+	}
+	found := false
+	for _, row := range summary {
+		for _, cell := range row {
+			if strings.Contains(cell, "Окно продаж") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("на листе «Общая информация» нет окна продаж")
 	}
 }
 

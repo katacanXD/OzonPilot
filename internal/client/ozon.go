@@ -60,6 +60,7 @@ const (
 	pathProductInfoList                 = "/v3/product/info/list"
 	pathAnalyticsStocks                 = "/v1/analytics/stocks"
 	pathPostingFBOList                  = "/v3/posting/fbo/list"
+	pathPostingFBSList                  = "/v3/posting/fbs/list"
 	pathProductInfoStocks               = "/v4/product/info/stocks"
 	pathReportPlacementByProductsCreate = "/v1/report/placement/by-products/create"
 	pathReportInfo                      = "/v1/report/info"
@@ -77,6 +78,9 @@ type OzonClient struct {
 	requestOpts *sendRequestOpts
 	// warehouseToCluster кэширует соответствие «склад -> кластер», полученное из /v1/analytics/stocks.
 	warehouseToCluster map[string]string
+	// salesClusters — кластеры, в которые были заказы. Нужны для -clusters all:
+	// в кластере может быть спрос, но не быть остатков.
+	salesClusters map[string]bool
 	// reportTimeout — сколько ждать готовности отчета Ozon (по умолчанию
 	// DefaultReportTimeout, меняется флагом -report-timeout).
 	reportTimeout time.Duration
@@ -93,6 +97,7 @@ func NewOzonClient(clientID, apiKey string) *OzonClient {
 		},
 		baseURL:            defaultBaseURL,
 		warehouseToCluster: make(map[string]string),
+		salesClusters:      make(map[string]bool),
 		reportTimeout:      DefaultReportTimeout,
 	}
 }
@@ -594,9 +599,25 @@ func DiscoverClusters(warehouseToCluster map[string]string) []string {
 	return clusters
 }
 
-// DiscoveredClusters возвращает список обнаруженных кластеров в текущем клиенте.
+// DiscoveredClusters возвращает кластеры, где есть остатки или были заказы.
+// Кластер только с заказами тоже важен: спрос есть, а остатков нет.
 func (c *OzonClient) DiscoveredClusters() []string {
-	return DiscoverClusters(c.warehouseToCluster)
+	seen := make(map[string]bool)
+	clusters := make([]string, 0, len(c.warehouseToCluster)+len(c.salesClusters))
+	for _, cluster := range DiscoverClusters(c.warehouseToCluster) {
+		if !seen[cluster] {
+			seen[cluster] = true
+			clusters = append(clusters, cluster)
+		}
+	}
+	for cluster := range c.salesClusters {
+		if cluster != "" && !seen[cluster] {
+			seen[cluster] = true
+			clusters = append(clusters, cluster)
+		}
+	}
+	sort.Strings(clusters)
+	return clusters
 }
 
 // normalizeWarehouseKey нужен, потому что разные методы Ozon отдают названия
@@ -803,7 +824,39 @@ func (c *OzonClient) loadFBOStocks(ctx context.Context, productsMap map[string]*
 	return warehouseToCluster, coveredSKUs, nil
 }
 
-type fboPostingListV3Req struct {
+// maxPostingPages страхует от бесконечного цикла, если Ozon начнет отдавать
+// has_next без курсора и без новых записей.
+const maxPostingPages = 2000
+
+// postingProduct — товар внутри отправления.
+type postingProduct struct {
+	SKU      int64  `json:"sku"`
+	OfferID  string `json:"offer_id"`
+	Quantity int    `json:"quantity"`
+}
+
+// postingClusterData — кластеры, которые Ozon отдает в аналитических и
+// финансовых данных отправления. cluster_to — это кластер, куда уехал товар;
+// именно он соответствует разрезу «Кластер отгрузки → Товары» в кабинете.
+type postingClusterData struct {
+	WarehouseName string `json:"warehouse_name"`
+	City          string `json:"city"`
+	ClusterFrom   string `json:"cluster_from"`
+	ClusterTo     string `json:"cluster_to"`
+}
+
+type postingItem struct {
+	PostingNumber string             `json:"posting_number"`
+	Status        string             `json:"status"`
+	AnalyticsData postingClusterData `json:"analytics_data"`
+	FinancialData postingClusterData `json:"financial_data"`
+	Products      []postingProduct   `json:"products"`
+}
+
+// postingListReq — запрос списка отправлений. Старые версии метода листают по
+// offset, новые — по cursor; отправляем оба параметра. Лишний параметр Ozon
+// игнорирует, поэтому пагинация работает на любой версии метода.
+type postingListReq struct {
 	Dir    string `json:"dir"`
 	Filter struct {
 		Since string `json:"since"`
@@ -811,43 +864,159 @@ type fboPostingListV3Req struct {
 	} `json:"filter"`
 	Limit  int    `json:"limit"`
 	Cursor string `json:"cursor,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 	With   struct {
 		AnalyticsData bool `json:"analytics_data"`
+		FinancialData bool `json:"financial_data"`
 	} `json:"with"`
 }
 
-type fboPostingListV3Resp struct {
-	Cursor   string `json:"cursor"`
-	HasNext  bool   `json:"has_next"`
-	Postings []struct {
-		PostingNumber string `json:"posting_number"`
-		Status        string `json:"status"`
-		AnalyticsData struct {
-			WarehouseName string `json:"warehouse_name"`
-			City          string `json:"city"`
-		} `json:"analytics_data"`
-		Products []struct {
-			SKU      int64  `json:"sku"`
-			OfferID  string `json:"offer_id"`
-			Quantity int    `json:"quantity"`
-		} `json:"products"`
-	} `json:"postings"`
+// postingListResp поддерживает оба известных формата ответа: плоский
+// (postings в корне) и обернутый в result.
+type postingListResp struct {
+	Cursor   string        `json:"cursor"`
+	HasNext  bool          `json:"has_next"`
+	Postings []postingItem `json:"postings"`
+	Result   struct {
+		Cursor   string        `json:"cursor"`
+		HasNext  bool          `json:"has_next"`
+		Postings []postingItem `json:"postings"`
+	} `json:"result"`
 }
 
+// page возвращает страницу отправлений независимо от формата ответа.
+func (r *postingListResp) page() (items []postingItem, hasNext bool, cursor string) {
+	if len(r.Postings) > 0 {
+		return r.Postings, r.HasNext, r.Cursor
+	}
+	if len(r.Result.Postings) > 0 {
+		return r.Result.Postings, r.Result.HasNext, r.Result.Cursor
+	}
+	// Пустая страница: has_next сообщаем вызывающему, чтобы он остановился
+	// осознанно, а не считал данные полными по умолчанию.
+	if r.Cursor != "" {
+		return nil, r.HasNext, r.Cursor
+	}
+	return nil, r.Result.HasNext, r.Result.Cursor
+}
+
+// salesStats — что удалось собрать из списка отправлений. Нужен для лога:
+// по нему видно, сколько заказов попало в кластеры, а сколько осталось только
+// в общем итоге.
+type salesStats struct {
+	scheme        string
+	postings      int
+	units         float64
+	unmapped      int
+	unmappedUnits float64
+	warehouses    map[string]bool
+}
+
+// resolveSalesCluster определяет кластер заказа: сначала кластер назначения
+// (cluster_to — «куда уехал товар»), затем кластер отгрузки, затем карта
+// «склад → кластер» из остатков и резервный матчер по названию склада.
+func resolveSalesCluster(post postingItem, warehouseToCluster map[string]string) (cluster, warehouse string) {
+	warehouse = post.AnalyticsData.WarehouseName
+
+	for _, raw := range []string{
+		post.FinancialData.ClusterTo,
+		post.AnalyticsData.ClusterTo,
+		post.FinancialData.ClusterFrom,
+		post.AnalyticsData.ClusterFrom,
+	} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if name := NormalizeClusterName(raw); name != "" {
+			return name, warehouse
+		}
+	}
+
+	if warehouse == "" {
+		return "", ""
+	}
+	if cluster := warehouseToCluster[normalizeWarehouseKey(warehouse)]; cluster != "" {
+		return cluster, warehouse
+	}
+	return matchWarehouseClusterFallback(warehouse), warehouse
+}
+
+// lookupPostingProduct находит товар отправления по артикулу, а при пустом
+// артикуле — по SKU.
+func lookupPostingProduct(productsMap, offerIndex map[string]*RawProductData, skuToOffer map[string]string, prod postingProduct) *RawProductData {
+	targetOffer := strings.TrimSpace(prod.OfferID)
+	if targetOffer == "" && prod.SKU != 0 {
+		targetOffer = skuToOffer[strconv.FormatInt(prod.SKU, 10)]
+	}
+	return lookupProduct(productsMap, offerIndex, targetOffer)
+}
+
+// loadSalesVelocityByCluster собирает заказы за окно по обеим схемам: FBO и
+// FBS. Кластер заказа — тот, куда уехал товар (cluster_to), поэтому разрез
+// совпадает с аналитикой кабинета «Кластер отгрузки → Товары».
 func (c *OzonClient) loadSalesVelocityByCluster(ctx context.Context, windowDays int, productsMap map[string]*RawProductData, warehouseToCluster map[string]string) error {
 	if windowDays <= 0 {
 		windowDays = 28
 	}
+
+	// FBO — основа истории: без нее расчет поставок бессмыслен, ошибка критична.
+	fbo, err := c.collectSalesWithFallback(ctx, pathPostingFBOList, "FBO", windowDays, productsMap, warehouseToCluster)
+	if err != nil {
+		slog.Warn("Ошибка запроса списка отправлений FBO", "err", err)
+		return err
+	}
+
+	// FBS — вторая половина заказов: товар может продаваться только с
+	// собственного склада. Сбой FBS не должен ронять весь расчет.
+	fbs, fbsErr := c.collectSalesWithFallback(ctx, pathPostingFBSList, "FBS", windowDays, productsMap, warehouseToCluster)
+	if fbsErr != nil {
+		slog.Warn("Не удалось получить отправления FBS — заказы посчитаны только по FBO", "err", fbsErr)
+	}
+
+	for _, product := range productsMap {
+		for cluster, periodSales := range product.PeriodSales {
+			product.ClusterSales[cluster] = periodSales / float64(windowDays)
+		}
+	}
+
+	logSalesStats(fbo)
+	if fbsErr == nil {
+		logSalesStats(fbs)
+	}
+
+	return nil
+}
+
+// collectSalesWithFallback повторяет запрос без financial_data, если метод его
+// не принял: тогда кластер берется из аналитических данных отправления или из
+// карты остатков. Повтор безопасен — заказы применяются только после успешной
+// загрузки всех страниц.
+func (c *OzonClient) collectSalesWithFallback(ctx context.Context, path, scheme string, windowDays int, productsMap map[string]*RawProductData, warehouseToCluster map[string]string) (salesStats, error) {
+	stats, err := c.collectSales(ctx, path, scheme, windowDays, productsMap, warehouseToCluster, true)
+	if err == nil {
+		return stats, nil
+	}
+	slog.Warn("Метод отправлений не принял financial_data — повтор без него", "схема", scheme, "метод", path, "err", err)
+	return c.collectSales(ctx, path, scheme, windowDays, productsMap, warehouseToCluster, false)
+}
+
+// salesEntry — отложенное начисление заказа: применяется, только когда список
+// отправлений загружен целиком.
+type salesEntry struct {
+	product *RawProductData
+	cluster string
+	qty     float64
+}
+
+// collectSales листает список отправлений одной схемы и раскладывает заказы
+// по кластерам назначения.
+func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, windowDays int, productsMap map[string]*RawProductData, warehouseToCluster map[string]string, financialData bool) (salesStats, error) {
+	stats := salesStats{scheme: scheme, warehouses: make(map[string]bool)}
+	var entries []salesEntry
+
 	now := time.Now().UTC()
-	sinceTime := now.AddDate(0, 0, -windowDays)
-
-	since := sinceTime.Format("2006-01-02T15:04:05Z")
-	to := now.Format("2006-01-02T15:04:05Z")
-
-	cursor := ""
-	limit := 100
-	totalFBOOrders := 0
-	mappedFBOOrders := 0
+	since := now.AddDate(0, 0, -windowDays)
+	const limit = 100
 
 	offerIndex := buildOfferIndex(productsMap)
 	skuToOffer := make(map[string]string, len(productsMap))
@@ -857,82 +1026,107 @@ func (c *OzonClient) loadSalesVelocityByCluster(ctx context.Context, windowDays 
 		}
 	}
 
-	for {
-		var req fboPostingListV3Req
+	cursor := ""
+	offset := 0
+
+	for page := 1; page <= maxPostingPages; page++ {
+		var req postingListReq
 		req.Dir = "ASC"
-		req.Filter.Since = since
-		req.Filter.To = to
+		req.Filter.Since = since.Format("2006-01-02T15:04:05Z")
+		req.Filter.To = now.Format("2006-01-02T15:04:05Z")
 		req.Limit = limit
 		req.Cursor = cursor
+		req.Offset = offset
 		req.With.AnalyticsData = true
+		req.With.FinancialData = financialData
 
-		var resp fboPostingListV3Resp
-		err := c.sendRequest(ctx, pathPostingFBOList, req, &resp)
-		if err != nil {
-			slog.Warn("Ошибка запроса /v3/posting/fbo/list", "err", err)
-			return err
+		var resp postingListResp
+		if err := c.sendRequest(ctx, path, req, &resp); err != nil {
+			return stats, err
 		}
 
-		for _, post := range resp.Postings {
+		items, hasNext, nextCursor := resp.page()
+		for _, post := range items {
 			if strings.EqualFold(post.Status, "cancelled") {
 				continue
 			}
 
-			totalFBOOrders++
-			whName := post.AnalyticsData.WarehouseName
-
-			// Кластер берем из карты остатков: она построена на актуальных
-			// данных Ozon. Если склада в ней нет, используем резервный матчер.
-			cluster := warehouseToCluster[normalizeWarehouseKey(whName)]
+			stats.postings++
+			cluster, whName := resolveSalesCluster(post, warehouseToCluster)
 			if cluster == "" {
-				cluster = matchWarehouseClusterFallback(whName)
-			}
-			if cluster != "" {
-				mappedFBOOrders++
+				stats.unmapped++
+				if whName != "" {
+					stats.warehouses[whName] = true
+				}
 			}
 
 			for _, prod := range post.Products {
-				targetOffer := strings.TrimSpace(prod.OfferID)
-				if targetOffer == "" && prod.SKU != 0 {
-					targetOffer = skuToOffer[strconv.FormatInt(prod.SKU, 10)]
-				}
-
-				p := lookupProduct(productsMap, offerIndex, targetOffer)
+				p := lookupPostingProduct(productsMap, offerIndex, skuToOffer, prod)
 				if p == nil {
 					continue
 				}
 
-				// Продажи учитываем по каждому складу отдельно, а склады кластера
-				// дополнительно агрегируем в сам кластер — так же, как остатки.
 				qty := float64(prod.Quantity)
-				p.TotalPeriodSales += qty // общий итог без двойного счета
-				if whName != "" && whName != cluster {
-					p.PeriodSales[whName] += qty
+				stats.units += qty
+				if cluster == "" {
+					stats.unmappedUnits += qty
 				}
-				if cluster != "" {
-					p.PeriodSales[cluster] += qty
-				}
+				entries = append(entries, salesEntry{product: p, cluster: cluster, qty: qty})
 			}
 		}
 
-		if !resp.HasNext || resp.Cursor == "" || resp.Cursor == cursor {
+		if !hasNext {
 			break
 		}
-		cursor = resp.Cursor
-	}
-
-	for _, product := range productsMap {
-		for cluster, periodSales := range product.PeriodSales {
-			product.ClusterSales[cluster] = periodSales / float64(windowDays)
+		// Новые версии метода листают по курсору, старые — по offset.
+		if nextCursor != "" && nextCursor != cursor {
+			cursor = nextCursor
+			continue
 		}
+		if len(items) == 0 {
+			slog.Warn("Ozon вернул has_next без курсора и без записей — история отправлений может быть неполной",
+				"схема", scheme)
+			break
+		}
+		offset += len(items)
 	}
 
-	slog.Info("Успешно рассчитан FBO спрос по отправлениям v3",
-		"всего_fbo_заказов", totalFBOOrders,
-		"с_определенным_кластером", mappedFBOOrders,
-		"период_дней", windowDays)
+	// Заказы применяются только теперь: если запрос сорвется на второй странице,
+	// повтор без financial_data не удвоит уже собранные штуки.
+	for _, entry := range entries {
+		entry.product.TotalPeriodSales += entry.qty // общий итог без двойного счета
+		if entry.cluster == "" {
+			continue
+		}
+		entry.product.PeriodSales[entry.cluster] += entry.qty
+		c.salesClusters[entry.cluster] = true
+	}
 
-	return nil
+	return stats, nil
+}
+
+// logSalesStats пишет в лог, сколько заказов разложено по кластерам, а сколько
+// осталось только в общем итоге: это и есть источник расхождений с кабинетом.
+func logSalesStats(s salesStats) {
+	if s.unmapped > 0 {
+		sample := make([]string, 0, 5)
+		for wh := range s.warehouses {
+			if len(sample) == 5 {
+				break
+			}
+			sample = append(sample, wh)
+		}
+		slog.Warn("Часть отправлений не удалось отнести к кластеру — они учтены только в общем итоге",
+			"схема", s.scheme,
+			"отправлений_без_кластера", s.unmapped,
+			"штук_без_кластера", s.unmappedUnits,
+			"примеры_складов", strings.Join(sample, ", "))
+	}
+	slog.Info("Заказы загружены",
+		"схема", s.scheme,
+		"отправлений", s.postings,
+		"штук", s.units,
+		"без_кластера", s.unmapped)
 }
 
 func (c *OzonClient) loadFBSStocksChunk(ctx context.Context, chunk []string, productsMap, offerIndex map[string]*RawProductData) error {
