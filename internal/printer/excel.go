@@ -713,9 +713,12 @@ func statusTint(status string) cellTint {
 }
 
 func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCount int) error {
-	widths := map[string]float64{"A": 24, "B": 10, "C": 20, "D": 16, "E": 18}
+	// Узкими (8) сделаны все колонки с числами, кроме артикула (A), размещения
+	// (C) и статуса: там длинный текст, и им нужно место.
+	const narrowWidth = 8.0
+	widths := map[string]float64{"A": 24, "B": narrowWidth, "C": 20, "D": narrowWidth, "E": narrowWidth}
 	if baseCount == baseColumnsOzon {
-		widths["F"] = 18
+		widths["F"] = narrowWidth
 	}
 	for column, width := range widths {
 		if err := file.SetColWidth(sheetName, column, column, width); err != nil {
@@ -732,7 +735,7 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		if err != nil {
 			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
 		}
-		if err := file.SetColWidth(sheetName, start, end, 13); err != nil {
+		if err := file.SetColWidth(sheetName, start, end, narrowWidth); err != nil {
 			return fmt.Errorf("не удалось настроить ширину столбцов Excel: %w", err)
 		}
 	}
@@ -741,9 +744,9 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 	}
 
-	// Заголовки многострочные и мелким шрифтом: 30 хватает, а прежние 46
-	// съедали пол-экрана на каждом листе.
-	for row, height := range map[int]float64{groupRow: 18, headerRow: 30} {
+	// В узких колонках (8) заголовки переносятся на 3–4 строки, поэтому высота
+	// подобрана так, чтобы текст не обрезался.
+	for row, height := range map[int]float64{groupRow: 18, headerRow: 44} {
 		if err := file.SetRowHeight(sheetName, row, height); err != nil {
 			return fmt.Errorf("не удалось настроить высоту строки Excel: %w", err)
 		}

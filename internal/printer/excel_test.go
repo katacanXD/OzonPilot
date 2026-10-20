@@ -410,6 +410,25 @@ func TestExportToExcelLayout(t *testing.T) {
 		t.Errorf("данные должны начинаться с третьей строки, получено %q", got)
 	}
 
+	// Узкие числовые колонки — 8; артикул, размещение и статус шире.
+	statusColumn, err := excelize.ColumnNumberToName(9) // 5 базовых + 3 кластера + статус
+	if err != nil {
+		t.Fatalf("ColumnNumberToName: %v", err)
+	}
+	widths := map[string]float64{
+		"A": 24, "B": 8, "C": 20, "D": 8, "E": 8,
+		statusColumn: 13,
+	}
+	for column, want := range widths {
+		got, err := f.GetColWidth(sheetName, column)
+		if err != nil {
+			t.Fatalf("GetColWidth(%s): %v", column, err)
+		}
+		if got != want {
+			t.Errorf("ширина колонки %s = %v, ожидалось %v", column, got, want)
+		}
+	}
+
 	// Окно продаж попадает в сводку: по нему цифры сверяются с кабинетом.
 	summary, err := f.GetRows(summarySheet)
 	if err != nil {
