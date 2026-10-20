@@ -85,6 +85,9 @@ type OzonClient struct {
 	// salesClusters — кластеры, в которые были заказы. Нужны для -clusters all:
 	// в кластере может быть спрос, но не быть остатков.
 	salesClusters map[string]bool
+	// debugOffer — артикул, по которому нужен подробный список отправлений
+	// (флаг -debug-offer): без него расхождение с кабинетом не разобрать.
+	debugOffer string
 	// reportTimeout — сколько ждать готовности отчета Ozon (по умолчанию
 	// DefaultReportTimeout, меняется флагом -report-timeout).
 	reportTimeout time.Duration
@@ -852,6 +855,8 @@ type postingClusterData struct {
 type postingItem struct {
 	PostingNumber string             `json:"posting_number"`
 	Status        string             `json:"status"`
+	CreatedAt     string             `json:"created_at"`
+	InProcessAt   string             `json:"in_process_at"`
 	AnalyticsData postingClusterData `json:"analytics_data"`
 	FinancialData postingClusterData `json:"financial_data"`
 	Products      []postingProduct   `json:"products"`
@@ -994,6 +999,106 @@ func (c *OzonClient) loadSalesVelocityByCluster(ctx context.Context, windowDays 
 	}
 
 	return nil
+}
+
+// SetDebugOffer включает подробный лог отправлений по одному артикулу.
+func (c *OzonClient) SetDebugOffer(offerID string) {
+	c.debugOffer = strings.TrimSpace(offerID)
+}
+
+// DebugOfferPostings печатает все отправления одного артикула за расширенное
+// окно (90 дней) по обеим схемам: видно дату, статус, склады, кластеры и
+// количество. Нужно, когда цифра в отчёте расходится с кабинетом.
+func (c *OzonClient) DebugOfferPostings(ctx context.Context, windowDays int) {
+	target := strings.ToLower(c.debugOffer)
+	if target == "" {
+		return
+	}
+	if windowDays <= 0 {
+		windowDays = 28
+	}
+
+	const sweepDays = 90
+	now := time.Now().UTC()
+	since := now.AddDate(0, 0, -sweepDays)
+	windowStart := now.AddDate(0, 0, -windowDays)
+
+	for _, method := range []struct {
+		path   string
+		scheme string
+	}{
+		{pathPostingFBOList, "FBO"},
+		{pathPostingFBSList, "FBS"},
+		{pathPostingFBSListLegacy, "FBS(v3)"},
+	} {
+		cursor, offset, found := "", 0, 0
+		for page := 1; page <= maxPostingPages; page++ {
+			var req postingListReq
+			req.Dir = "ASC"
+			req.Filter.Since = since.Format("2006-01-02T15:04:05Z")
+			req.Filter.To = now.Format("2006-01-02T15:04:05Z")
+			req.Limit = 100
+			req.Cursor = cursor
+			req.Offset = offset
+			req.With.AnalyticsData = true
+			req.With.FinancialData = true
+
+			var resp postingListResp
+			if err := c.sendRequest(ctx, method.path, req, &resp); err != nil {
+				slog.Warn("Диагностика артикула: метод недоступен", "схема", method.scheme, "err", err)
+				break
+			}
+
+			items, hasNext, nextCursor := resp.page()
+			for _, post := range items {
+				for _, prod := range post.Products {
+					if strings.ToLower(strings.TrimSpace(prod.OfferID)) != target {
+						continue
+					}
+					found++
+					slog.Info("Диагностика артикула: отправление",
+						"схема", method.scheme,
+						"номер", post.PostingNumber,
+						"статус", post.Status,
+						"создано", post.CreatedAt,
+						"в_окне_отчёта", postingInWindow(post, windowStart),
+						"отгрузка", post.FinancialData.ClusterFrom,
+						"назначение", post.FinancialData.ClusterTo,
+						"склад", post.AnalyticsData.WarehouseName,
+						"артикул_в_отправлении", prod.OfferID,
+						"sku", prod.SKU,
+						"шт", prod.Quantity)
+				}
+			}
+
+			if !hasNext {
+				break
+			}
+			if nextCursor != "" && nextCursor != cursor {
+				cursor = nextCursor
+				continue
+			}
+			if len(items) == 0 {
+				break
+			}
+			offset += len(items)
+		}
+		slog.Info("Диагностика артикула завершена",
+			"артикул", c.debugOffer, "схема", method.scheme, "найдено_отправлений", found)
+	}
+}
+
+// postingInWindow сообщает, попадает ли отправление в окно отчёта.
+func postingInWindow(post postingItem, windowStart time.Time) bool {
+	raw := post.CreatedAt
+	if raw == "" {
+		raw = post.InProcessAt
+	}
+	created, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return false
+	}
+	return !created.Before(windowStart)
 }
 
 // collectSalesWithFallback повторяет запрос без financial_data, если метод его

@@ -43,6 +43,7 @@ func main() {
 	resetKeys := flag.Bool("reset-keys", false, "Сбросить сохраненные API ключи Ozon")
 	reportTimeoutMin := flag.Int("report-timeout", 5, "Сколько минут ждать готовности отчета Ozon о стоимости размещения")
 	debugFlag := flag.Bool("debug", false, "Включить подробный вывод отладки")
+	debugOfferFlag := flag.String("debug-offer", "", "Показать все отправления указанного артикула за 90 дней")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -179,6 +180,13 @@ func main() {
 		ozon := client.NewOzonClient(cfg.ClientID, cfg.APIKey)
 		ozon.SetReportTimeout(time.Duration(*reportTimeoutMin) * time.Minute)
 		ctx := context.Background()
+
+		// Диагностика по одному артикулу: печатаем все отправления за 90 дней,
+		// чтобы увидеть расхождение с кабинетом (даты, статусы, кластеры).
+		if strings.TrimSpace(*debugOfferFlag) != "" {
+			ozon.SetDebugOffer(*debugOfferFlag)
+			ozon.DebugOfferPostings(ctx, *windowDaysFlag)
+		}
 
 		// Если файл отчета о размещении не передан вручную, запрашиваем его через Ozon API
 		if placementData == nil {
