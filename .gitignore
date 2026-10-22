@@ -48,4 +48,5 @@ node_modules/
 .verify*/
 .smoke/
 
-.github/copilot-instructions.md
+.github/
+
