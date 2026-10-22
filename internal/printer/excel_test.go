@@ -2,6 +2,7 @@ package printer
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -432,18 +433,20 @@ func TestExportToExcelLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ColumnNumberToName: %v", err)
 	}
+	// В файл пишется пересчитанное значение: Excel хранит ширину в символах,
+	// а показывает её после пересчёта через пиксели.
 	widths := map[string]float64{
 		"A": 24, "B": 8, "C": 19.26, "D": 11.84, "E": 11.21,
 		"F": 12.63, "G": 12.63, "H": 7.42, "I": 7.42,
 		statusColumn: 13,
 	}
-	for column, want := range widths {
+	for column, displayed := range widths {
 		got, err := f.GetColWidth(sheetName, column)
 		if err != nil {
 			t.Fatalf("GetColWidth(%s): %v", column, err)
 		}
-		if got != want {
-			t.Errorf("ширина колонки %s = %v, ожидалось %v", column, got, want)
+		if want := storedColumnWidth(displayed); math.Abs(got-want) > 0.001 {
+			t.Errorf("ширина колонки %s = %v, ожидалось %v (видимая %v)", column, got, want, displayed)
 		}
 	}
 

@@ -2,6 +2,7 @@ package printer
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -799,7 +800,7 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		if err != nil {
 			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
 		}
-		if err := file.SetColWidth(sheetName, column, column, width); err != nil {
+		if err := file.SetColWidth(sheetName, column, column, storedColumnWidth(width)); err != nil {
 			return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 		}
 	}
@@ -811,13 +812,13 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 			if err != nil {
 				return fmt.Errorf("не удалось определить колонку Excel: %w", err)
 			}
-			if err := file.SetColWidth(sheetName, column, column, width); err != nil {
+			if err := file.SetColWidth(sheetName, column, column, storedColumnWidth(width)); err != nil {
 				return fmt.Errorf("не удалось настроить ширину столбцов Excel: %w", err)
 			}
 		}
 	}
 
-	if err := file.SetColWidth(sheetName, lastColumn, lastColumn, 13); err != nil {
+	if err := file.SetColWidth(sheetName, lastColumn, lastColumn, storedColumnWidth(13)); err != nil {
 		return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 	}
 
@@ -827,6 +828,21 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		}
 	}
 	return nil
+}
+
+// maxDigitWidth — ширина цифры шрифта Normal (Calibri 11) в пикселях.
+const maxDigitWidth = 7.0
+
+// storedColumnWidth пересчитывает «видимую» ширину столбца в то значение,
+// которое нужно записать в файл.
+//
+// Excel хранит ширину в символах, а в диалоге «Ширина столбца» показывает её
+// после пересчёта через пиксели: при Calibri 11 записанные 19.26 видны как
+// 18.68. Пересчёт обратный формуле Excel, поэтому в диалоге будет ровно то
+// число, которое задано в коде.
+func storedColumnWidth(displayed float64) float64 {
+	pixels := math.Round(displayed*maxDigitWidth + 5)
+	return (256*pixels/maxDigitWidth - math.Trunc(128/maxDigitWidth)) / 256
 }
 
 func applyStyle(file *excelize.File, styles *styleCache, sheet, from, to string, spec cellSpec) error {
