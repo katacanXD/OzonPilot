@@ -23,7 +23,7 @@
 
 ```powershell
 .\OzonPilot.exe -postavka 30 -prodazhi 14
-.\OzonPilot.exe -clusters "Москва,Санкт-Петербург,Юг" -placement-file "C:\Downloads\placement.xlsx"
+.\OzonPilot.exe -clusters "Москва,Санкт-Петербург,Казань" -placement-file "C:\Downloads\placement.xlsx"
 .\OzonPilot.exe -clusters all -debug
 .\OzonPilot.exe -report-timeout 10
 .\OzonPilot.exe -reset-keys
