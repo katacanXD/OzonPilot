@@ -433,7 +433,7 @@ func TestExportToExcelLayout(t *testing.T) {
 		t.Fatalf("ColumnNumberToName: %v", err)
 	}
 	widths := map[string]float64{
-		"A": 24, "B": 8, "C": 19.21, "D": 11.84, "E": 11.21,
+		"A": 24, "B": 8, "C": 19.26, "D": 11.84, "E": 11.21,
 		"F": 12.63, "G": 12.63, "H": 7.42, "I": 7.42,
 		statusColumn: 13,
 	}

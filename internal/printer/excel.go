@@ -41,11 +41,10 @@ const (
 	colorBaseHeader = "2F5597" // синий: заголовки общих колонок
 	// «Продажи всего» — отдельная колонка, не привязанная к кластеру: у нее
 	// нейтральная заливка, чтобы не путать с блоками кластеров.
-	colorTotalFill = "E7E6E6"
+	colorTotalFill = "F2F2F2"
 	colorTotalFont = "1F3864"
 	colorWhite     = "FFFFFF"
-	colorGrid      = "B4C6E7" // тонкая сетка
-	colorGridBold  = "1F3864" // разделитель блоков кластеров
+	colorGrid      = "B4C6E7" // тонкая сетка: блоки кластеров различаются цветом, без толстых линий
 )
 
 // clusterPalette задает цветовую гамму блока колонок одного кластера.
@@ -130,7 +129,6 @@ type cellSpec struct {
 	size       float64
 	numFmt     int
 	bold       bool
-	blockStart bool // утолщённая левая граница — начало блока колонок кластера
 }
 
 type styleCache struct {
@@ -143,10 +141,9 @@ func (c *styleCache) id(spec cellSpec) (int, error) {
 		return cached, nil
 	}
 
+	// Границы у всех ячеек одинаковые: блоки кластеров различаются заливкой,
+	// а толстые линии только отвлекают.
 	left := excelize.Border{Type: "left", Style: 1, Color: colorGrid}
-	if spec.blockStart {
-		left = excelize.Border{Type: "left", Style: 2, Color: colorGridBold}
-	}
 	size := spec.size
 	if size == 0 {
 		size = 11
@@ -540,7 +537,7 @@ func writeHeaders(
 	windowDays int,
 ) error {
 	baseBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "center", bold: true, size: headerFontSize}
-	totalBand := cellSpec{fill: colorTotalFill, font: colorTotalFont, align: "center", bold: true, size: headerFontSize}
+	totalBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "center", bold: true, size: headerFontSize}
 
 	// Артикул и остаток FBS — одиночные колонки, подписи группы у них нет:
 	// заливка нужна только ради ровной полосы.
@@ -638,12 +635,10 @@ func writeHeaders(
 		switch {
 		case col == columnCount:
 			spec.fill = colorTitle
-		case col == baseCount:
-			spec.fill = colorTotalFill
-			spec.font = colorTotalFont
 		case col > baseCount:
+			// «Продажи всего» (col == baseCount) в шапке остается таким же
+			// синим, как остальные колонки: выделяется только тело.
 			spec.fill = paletteFor((col - baseCount - 1) / 3).header
-			spec.blockStart = (col-baseCount-1)%3 == 0
 		}
 		cell, err := excelize.CoordinatesToCellName(col, headerRow)
 		if err != nil {
@@ -688,7 +683,7 @@ func buildColumnSpecs(clusters []string, columnCount, baseCount int) []cellSpec 
 		palette := paletteFor(i)
 		start := baseCount + 1 + i*3
 		// Продажи считаются в штуках, поэтому формат целый: «10», а не «10,0».
-		specs[start] = cellSpec{fill: palette.body, font: palette.header, align: "center", customFmt: "#,##0", blockStart: true}
+		specs[start] = cellSpec{fill: palette.body, font: palette.header, align: "center", customFmt: "#,##0"}
 		specs[start+1] = cellSpec{fill: palette.body, font: "000000", align: "center"}
 		specs[start+2] = cellSpec{fill: palette.accent, font: palette.header, align: "center", bold: true}
 	}
@@ -794,7 +789,7 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 	// Ширины подобраны под содержимое: артикул и размещение — текст, деньги —
 	// суммы, кластеры — числа. «Продажи всего» шире остальных колонок кластера
 	// из-за длинного заголовка.
-	widths := map[int]float64{1: 24, 2: 8, 3: 19.21, 4: 11.84, 5: 11.21}
+	widths := map[int]float64{1: 24, 2: 8, 3: 19.26, 4: 11.84, 5: 11.21}
 	if baseCount == baseColumnsOzon {
 		widths[6] = 12.74
 	}
