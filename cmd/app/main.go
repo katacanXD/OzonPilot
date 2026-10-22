@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,11 +39,12 @@ func main() {
 	filePath := flag.String("file", "", "Путь к мок-файлу JSON (offline режим)")
 	placementFilePath := flag.String("placement-file", "", "Путь к файлу отчета о стоимости размещения (.xlsx/.csv)")
 	clustersFlag := flag.String("clusters", defaultClusters, "Целевые кластеры через запятую или 'all' для всех (например: Москва,СПб)")
-	windowDaysFlag := flag.Int("prodazhi", defaultWindowDays, "Окно расчета продаж (в днях)")
-	targetDaysFlag := flag.Int("postavka", defaultTargetDays, "На сколько дней обеспечить запас")
+	windowDaysRaw := flag.String("prodazhi", strconv.Itoa(defaultWindowDays), "Окно расчета продаж: число дней или mounth/quarter")
+	targetDaysRaw := flag.String("postavka", strconv.Itoa(defaultTargetDays), "На сколько дней обеспечить запас: число дней или mounth/quarter")
 	resetKeys := flag.Bool("reset-keys", false, "Сбросить сохраненные API ключи Ozon")
 	reportTimeoutMin := flag.Int("report-timeout", 5, "Сколько минут ждать готовности отчета Ozon о стоимости размещения")
 	debugFlag := flag.Bool("debug", false, "Включить подробный вывод отладки")
+	debugOfferFlag := flag.String("debug-offer", "", "Показать все отправления указанного артикула за 90 дней")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -51,12 +53,14 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
-	if *windowDaysFlag <= 0 {
-		slog.Error("Некорректный параметр -prodazhi: значение должно быть больше 0", "prodazhi", *windowDaysFlag)
+	windowDays, err := config.ParseDaysValue(*windowDaysRaw, time.Now())
+	if err != nil {
+		slog.Error("Некорректный параметр -prodazhi", "значение", *windowDaysRaw, "err", err)
 		os.Exit(1)
 	}
-	if *targetDaysFlag <= 0 {
-		slog.Error("Некорректный параметр -postavka: значение должно быть больше 0", "postavka", *targetDaysFlag)
+	targetDays, err := config.ParseDaysValue(*targetDaysRaw, time.Now())
+	if err != nil {
+		slog.Error("Некорректный параметр -postavka", "значение", *targetDaysRaw, "err", err)
 		os.Exit(1)
 	}
 	if *reportTimeoutMin <= 0 {
@@ -66,9 +70,10 @@ func main() {
 
 	leadTimeDays := defaultLeadTimeDays
 	slog.Info("Параметры расчета поставки",
-		"запас_дней", *targetDaysFlag,
+		"запас_дней", targetDays,
+		"окно_продаж_дней", windowDays,
 		"страховой_запас_дней", leadTimeDays,
-		"итого_дней_вперед", float64(*targetDaysFlag)+leadTimeDays,
+		"итого_дней_вперед", float64(targetDays)+leadTimeDays,
 	)
 
 	isAllClusters := strings.EqualFold(strings.TrimSpace(*clustersFlag), "all")
@@ -122,7 +127,7 @@ func main() {
 				normCluster := client.NormalizeClusterName(cluster)
 				clusterSet[normCluster] = true
 				if data.PeriodSales == 0 && data.DailySales != 0 {
-					data.PeriodSales = data.DailySales * float64(*windowDaysFlag)
+					data.PeriodSales = data.DailySales * float64(windowDays)
 				}
 				normalized[normCluster] = data
 			}
@@ -141,7 +146,7 @@ func main() {
 			// Привязываем данные о размещении, если они загружены
 			if placementData != nil {
 				if item, ok := placementData[rows[i].OfferID]; ok {
-					attachPlacement(&rows[i], item, *windowDaysFlag, now)
+					attachPlacement(&rows[i], item, windowDays, now)
 				}
 			}
 		}
@@ -180,9 +185,16 @@ func main() {
 		ozon.SetReportTimeout(time.Duration(*reportTimeoutMin) * time.Minute)
 		ctx := context.Background()
 
+		// Диагностика по одному артикулу: печатаем все отправления за 90 дней,
+		// чтобы увидеть расхождение с кабинетом (даты, статусы, кластеры).
+		if strings.TrimSpace(*debugOfferFlag) != "" {
+			ozon.SetDebugOffer(*debugOfferFlag)
+			ozon.DebugOfferPostings(ctx, windowDays)
+		}
+
 		// Если файл отчета о размещении не передан вручную, запрашиваем его через Ozon API
 		if placementData == nil {
-			pData, pErr := ozon.FetchPlacementReport(ctx, *windowDaysFlag)
+			pData, pErr := ozon.FetchPlacementReport(ctx, windowDays)
 			placementData, placementErr = pData, pErr
 			if pErr != nil {
 				slog.Warn("Не удалось автоматически получить отчет о стоимости размещения через API (отчет будет сформирован без данных о платном хранении)", "err", pErr)
@@ -191,7 +203,7 @@ func main() {
 			}
 		}
 
-		rawMap, err := ozon.FetchAllProducts(ctx, *windowDaysFlag)
+		rawMap, err := ozon.FetchAllProducts(ctx, windowDays)
 		if err != nil {
 			slog.Error("Ошибка загрузки данных из Ozon API", "err", err)
 			os.Exit(1)
@@ -214,7 +226,7 @@ func main() {
 				raw.ClusterSales,
 				raw.PeriodSales,
 				selectedClusters,
-				*targetDaysFlag,
+				targetDays,
 				leadTimeDays,
 			)
 			row.TotalFBOStock = raw.TotalFBO
@@ -223,7 +235,7 @@ func main() {
 			// Привязываем данные о стоимости размещения
 			if placementData != nil {
 				if item, ok := lookupPlacement(placementData, raw.OfferID, raw.SKU); ok {
-					attachPlacement(&row, item, *windowDaysFlag, now)
+					attachPlacement(&row, item, windowDays, now)
 				}
 			}
 
@@ -250,7 +262,7 @@ func main() {
 	// Чтобы вернуть таблицу в консоль, раскомментируйте вызов ниже.
 	// printer.PrintSummaryTable(rows, selectedClusters)
 
-	reportPath, err := printer.ExportToExcel(rows, selectedClusters, placementNote)
+	reportPath, err := printer.ExportToExcel(rows, selectedClusters, placementNote, windowDays)
 	if err != nil {
 		slog.Error("Не удалось создать Excel-отчет", "err", err)
 		os.Exit(1)

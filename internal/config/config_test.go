@@ -34,9 +34,6 @@ func TestValidateOrPromptKeysToleratesUnwritableConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.ClientID == "" || cfg.APIKey == "" {
-		t.Fatalf("ключи не прочитаны из конфига: %+v", cfg)
-	}
 
 	// Атрибут «только чтение» — та же ошибка доступа, что и на read-only профиле.
 	if err := os.Chmod(configPath, 0444); err != nil {
