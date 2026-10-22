@@ -79,7 +79,7 @@ func TestExportToExcelColumns(t *testing.T) {
 	foundPlacement := false
 	foundSpent := false
 	foundForecast := false
-	wantForecastHeader := fmt.Sprintf("Оценка хранения за %d дн. (₽)", domain.DefaultStorageForecastDays)
+	wantForecastHeader := fmt.Sprintf("Оценка за %d дн. (₽)", domain.DefaultStorageForecastDays)
 	for _, h := range headerRowValues {
 		switch h {
 		case "Размещение FBO":
@@ -101,18 +101,20 @@ func TestExportToExcelColumns(t *testing.T) {
 		t.Errorf("колонка %q не найдена в заголовках: %v", wantForecastHeader, headerRowValues)
 	}
 
-	if len(allRows[groupRow-1]) == 0 || allRows[groupRow-1][0] != "Товар · остаток · хранение" {
-		t.Errorf("полоса групп не найдена: %v", allRows[groupRow-1])
+	// Первые две колонки полосы групп пустые: подпись «Хранение» стоит над
+	// размещением и деньгами.
+	if got := allRows[groupRow-1][2]; got != "Хранение" {
+		t.Errorf("полоса групп должна начинаться с «Хранение», получено %q", got)
 	}
 
 	// Продажи считаются в штуках: формат целый, без «20,0».
-	salesStyleID, err := f.GetCellStyle(sheetName, "F3")
+	salesStyleID, err := f.GetCellStyle(sheetName, "G3")
 	if err != nil {
-		t.Fatalf("GetCellStyle(F4): %v", err)
+		t.Fatalf("GetCellStyle(G3): %v", err)
 	}
 	salesStyle, err := f.GetStyle(salesStyleID)
 	if err != nil {
-		t.Fatalf("GetStyle(F4): %v", err)
+		t.Fatalf("GetStyle(G3): %v", err)
 	}
 	if salesStyle.CustomNumFmt == nil || *salesStyle.CustomNumFmt != "#,##0" {
 		t.Errorf("формат колонки продаж = %v, ожидался целый #,##0", salesStyle.CustomNumFmt)
@@ -189,18 +191,18 @@ func TestExportToExcelColors(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	// У каждого кластера своя гамма: заголовок блока и его ячейки данных.
-	moscow := cellFill(t, f, "F3")
-	petersburg := cellFill(t, f, "I3")
+	moscow := cellFill(t, f, "G3")
+	petersburg := cellFill(t, f, "J3")
 	if moscow != strings.ToUpper(paletteFor(0).body) || petersburg != strings.ToUpper(paletteFor(1).body) {
 		t.Errorf("ячейки кластеров окрашены не по своей гамме: Москва=%q, СПб=%q", moscow, petersburg)
 	}
 	if moscow == petersburg {
 		t.Errorf("блоки кластеров должны быть разного цвета, получен %q", moscow)
 	}
-	if got := cellFill(t, f, "F2"); got != strings.ToUpper(paletteFor(0).header) {
+	if got := cellFill(t, f, "G2"); got != strings.ToUpper(paletteFor(0).header) {
 		t.Errorf("заголовок блока Москва окрашен в %q, ожидался %q", got, paletteFor(0).header)
 	}
-	if got := cellFill(t, f, "H3"); got != strings.ToUpper(clusterPalettes[0].accent) {
+	if got := cellFill(t, f, "I3"); got != strings.ToUpper(clusterPalettes[0].accent) {
 		t.Errorf("колонка «Поставка FBO» окрашена в %q, ожидался акцент %q", got, clusterPalettes[0].accent)
 	}
 
@@ -274,17 +276,17 @@ func TestExportToExcelOzonForecastColumns(t *testing.T) {
 		t.Fatalf("failed to read rows: %v", err)
 	}
 	header := allRows[headerRow-1]
-	if len(header) < 10 {
-		t.Fatalf("ожидалось 10 колонок, получено %d: %v", len(header), header)
+	if len(header) < 11 {
+		t.Fatalf("ожидалось 11 колонок, получено %d: %v", len(header), header)
 	}
 	// Колонки Ozon идут после прошлых списаний, блоки кластеров сдвинуты.
 	if header[3] != "Списано за хранение (₽)" || header[4] != "Прогноз Ozon на 28 дн. (₽)" || header[5] != "Прогноз Ozon до конца месяца (₽)" {
 		t.Errorf("колонки прогноза Ozon не на своих местах: %v", header)
 	}
-	if header[6] != "Продажи за период FBS и FBO" {
-		t.Errorf("блок кластера должен начинаться с седьмой колонки: %v", header)
+	if header[6] != "Продажи всего за 28 дней (шт)" || header[7] != "Продажи за 28 дней FBS и FBO" {
+		t.Errorf("колонка «Продажи всего» и блок кластера не на своих местах: %v", header)
 	}
-	if header[9] != "Статус" {
+	if header[10] != "Статус" {
 		t.Errorf("последняя колонка должна быть статусом: %v", header)
 	}
 	// Обе колонки прогноза — деньги, поэтому изменяемые суммы подсвечены.
@@ -387,21 +389,35 @@ func TestExportToExcelLayout(t *testing.T) {
 		}
 	}
 
-	// Закреп — только полоса групп и заголовки: данные листаются целиком.
+	// Закреп: полоса групп, заголовки и колонка с артикулом.
 	panes, err := f.GetPanes(sheetName)
 	if err != nil {
 		t.Fatalf("GetPanes: %v", err)
 	}
-	if !panes.Freeze || panes.YSplit != headerRow || panes.XSplit != 0 || panes.TopLeftCell != "A3" {
-		t.Errorf("закреп должен стоять на строках 1–2 (A3), получено %+v", panes)
+	if !panes.Freeze || panes.YSplit != headerRow || panes.XSplit != 1 || panes.TopLeftCell != "B3" {
+		t.Errorf("закреп должен стоять на строках 1–2 и колонке A (B3), получено %+v", panes)
 	}
 
 	allRows, err := f.GetRows(sheetName)
 	if err != nil {
 		t.Fatalf("failed to read rows: %v", err)
 	}
-	if got := allRows[groupRow-1][0]; got != "Товар · остаток · хранение" {
-		t.Errorf("в первой строке должна быть полоса групп, получено %q", got)
+	// Полоса групп: A и B пустые, «Хранение» над размещением и деньгами,
+	// «Продажи» над колонкой всего, дальше названия кластеров.
+	if got := allRows[groupRow-1][0]; got != "" {
+		t.Errorf("первая колонка полосы групп должна быть пустой, получено %q", got)
+	}
+	if got := allRows[groupRow-1][1]; got != "" {
+		t.Errorf("вторая колонка полосы групп должна быть пустой, получено %q", got)
+	}
+	if got := allRows[groupRow-1][2]; got != "Хранение" {
+		t.Errorf("над размещением и деньгами ожидалась подпись «Хранение», получено %q", got)
+	}
+	if got := allRows[groupRow-1][5]; got != "Продажи" {
+		t.Errorf("над колонкой всего ожидалась подпись «Продажи», получено %q", got)
+	}
+	if got := allRows[groupRow-1][6]; got != "Москва" {
+		t.Errorf("над блоком кластера ожидалось название кластера, получено %q", got)
 	}
 	if got := allRows[headerRow-1][0]; got != "Артикул (OfferID)" {
 		t.Errorf("во второй строке должны быть заголовки, получено %q", got)
@@ -410,13 +426,15 @@ func TestExportToExcelLayout(t *testing.T) {
 		t.Errorf("данные должны начинаться с третьей строки, получено %q", got)
 	}
 
-	// Узкие числовые колонки — 8; артикул, размещение и статус шире.
-	statusColumn, err := excelize.ColumnNumberToName(9) // 5 базовых + 3 кластера + статус
+	// Ширины: артикул и размещение шире, «Продажи всего» и продажи кластера —
+	// 12.63, остаток и поставка — 7.42, статус — 13.
+	statusColumn, err := excelize.ColumnNumberToName(10) // 6 базовых + 3 кластера + статус
 	if err != nil {
 		t.Fatalf("ColumnNumberToName: %v", err)
 	}
 	widths := map[string]float64{
-		"A": 24, "B": 8, "C": 20, "D": 10, "E": 10,
+		"A": 24, "B": 8, "C": 19.21, "D": 11.84, "E": 11.21,
+		"F": 12.63, "G": 12.63, "H": 7.42, "I": 7.42,
 		statusColumn: 13,
 	}
 	for column, want := range widths {

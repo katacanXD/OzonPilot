@@ -1145,8 +1145,11 @@ func (c *OzonClient) collectSales(ctx context.Context, path, scheme string, wind
 	}
 	var entries []salesEntry
 
+	// Окно считается по календарным дням, как в кабинете: 28 дней — это сегодня
+	// плюс 27 предыдущих, а не 28 суток назад.
 	now := time.Now().UTC()
-	since := now.AddDate(0, 0, -windowDays)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	since := dayStart.AddDate(0, 0, -(windowDays - 1))
 	const limit = 100
 
 	offerIndex := buildOfferIndex(productsMap)

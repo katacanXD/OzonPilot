@@ -26,10 +26,11 @@ const (
 	firstDataRow = 3
 
 	// Колонки до блоков кластеров: артикул, остаток FBS, размещение, прошлые
-	// списания и прогноз. Прогноз бывает двух видов: собственный прогноз Ozon
-	// из выгрузки ЛК (две колонки) или оценка программы (одна колонка).
-	baseColumnsEstimate = 5
-	baseColumnsOzon     = 6
+	// списания, прогноз (одна или две колонки) и «Продажи всего». Прогноз бывает
+	// двух видов: собственный прогноз Ozon из выгрузки ЛК (две колонки) или
+	// оценка программы (одна колонка).
+	baseColumnsEstimate = 6
+	baseColumnsOzon     = 7
 
 	// Заголовки колонок узкие и многострочные, поэтому шрифт мельче данных:
 	// иначе строка заголовков занимает пол-экрана.
@@ -38,9 +39,13 @@ const (
 
 	colorTitle      = "1F3864" // тёмно-синий: титул отчета
 	colorBaseHeader = "2F5597" // синий: заголовки общих колонок
-	colorWhite      = "FFFFFF"
-	colorGrid       = "B4C6E7" // тонкая сетка
-	colorGridBold   = "1F3864" // разделитель блоков кластеров
+	// «Продажи всего» — отдельная колонка, не привязанная к кластеру: у нее
+	// нейтральная заливка, чтобы не путать с блоками кластеров.
+	colorTotalFill = "E7E6E6"
+	colorTotalFont = "1F3864"
+	colorWhite     = "FFFFFF"
+	colorGrid      = "B4C6E7" // тонкая сетка
+	colorGridBold  = "1F3864" // разделитель блоков кластеров
 )
 
 // clusterPalette задает цветовую гамму блока колонок одного кластера.
@@ -206,7 +211,7 @@ func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, pl
 
 	styles := &styleCache{file: file, cache: make(map[cellSpec]int)}
 
-	if err := writeHeaders(file, styles, sheet, selectedClusters, columnCount, baseCount); err != nil {
+	if err := writeHeaders(file, styles, sheet, selectedClusters, columnCount, baseCount, windowDays); err != nil {
 		return "", err
 	}
 
@@ -215,25 +220,25 @@ func ExportToExcel(rows []domain.ProductSupplyRow, selectedClusters []string, pl
 		return "", err
 	}
 
-	// Закрепляем полосу групп и заголовки: данные начинаются с третьей строки.
+	// Закрепляем полосу групп, заголовки и колонку с артикулом: при прокрутке
+	// вправо артикул остается на виду.
 	if err := file.SetPanes(sheet, &excelize.Panes{
 		Freeze:      true,
 		Split:       false,
-		XSplit:      0,
+		XSplit:      1,
 		YSplit:      headerRow,
-		TopLeftCell: "A3",
-		ActivePane:  "bottomLeft",
+		TopLeftCell: "B3",
+		ActivePane:  "bottomRight",
 	}); err != nil {
-		return "", fmt.Errorf("не удалось закрепить верхние строки Excel: %w", err)
+		return "", fmt.Errorf("не удалось закрепить строки и колонку Excel: %w", err)
 	}
 
-	showRowStripes := false
-	if err := file.AddTable(sheet, &excelize.Table{
-		Range:          fmt.Sprintf("A%d:%s%d", headerRow, lastColumn, len(rows)+headerRow),
-		Name:           "SupplyTable",
-		StyleName:      "TableStyleLight1", // заливку задаем сами, полосы таблицы не нужны
-		ShowRowStripes: &showRowStripes,
-	}); err != nil {
+	// Автофильтр вместо «умной таблицы»: у кластеров одинаковые заголовки
+	// колонок, а таблица требует уникальных имен и переименовывает дубликаты
+	// в Column1/Column2. Автофильтру уникальность не нужна.
+	if err := file.AutoFilter(sheet, fmt.Sprintf(
+		"A%d:%s%d", headerRow, lastColumn, len(rows)+headerRow,
+	), nil); err != nil {
 		return "", fmt.Errorf("не удалось включить фильтры Excel: %w", err)
 	}
 
@@ -380,7 +385,7 @@ func writeSummarySheet(
 		{"Дата и время отчёта", time.Now().Format("02.01.2006 15:04")},
 		{"Позиций в отчёте", fmt.Sprintf("%d", len(rows))},
 		{"Кластеры в отчёте", strings.Join(clusters, ", ")},
-		{"Окно продаж, дней", fmt.Sprintf("%d", windowDays)},
+		{"Окно продаж", windowLabel(windowDays)},
 		{"Платное хранение, шт", fmt.Sprintf("%d", s.paid)},
 		{"Списано за хранение, ₽", formatRub(s.spent)},
 	}
@@ -466,7 +471,38 @@ func formatRub(v float64) string {
 	return grouped.String()
 }
 
-func buildHeaders(clusters []string, baseCount int) []string {
+// daysLabel пишет «28 дней», «1 день», «2 дня» — с правильным склонением.
+func daysLabel(days int) string {
+	return fmt.Sprintf("%d %s", days, pluralDays(days))
+}
+
+// windowLabel — окно в виде «28 дней (25.09.2026 – 22.10.2026)»: по датам
+// сразу видно, с каким периодом кабинета сверять цифры.
+func windowLabel(days int) string {
+	end := time.Now()
+	start := end.AddDate(0, 0, -(days - 1))
+	return fmt.Sprintf("%s (%s – %s)",
+		daysLabel(days),
+		start.Format("02.01.2006"),
+		end.Format("02.01.2006"),
+	)
+}
+
+func pluralDays(days int) string {
+	if days%100 >= 11 && days%100 <= 14 {
+		return "дней"
+	}
+	switch days % 10 {
+	case 1:
+		return "день"
+	case 2, 3, 4:
+		return "дня"
+	}
+	return "дней"
+}
+
+func buildHeaders(clusters []string, baseCount, windowDays int) []string {
+	salesHeader := fmt.Sprintf("Продажи за %s FBS и FBO", daysLabel(windowDays))
 	headers := []string{
 		"Артикул (OfferID)",
 		"Остаток FBS",
@@ -479,13 +515,14 @@ func buildHeaders(clusters []string, baseCount int) []string {
 			"Прогноз Ozon до конца месяца (₽)",
 		)
 	} else {
-		headers = append(headers, fmt.Sprintf("Оценка хранения за %d дн. (₽)", domain.DefaultStorageForecastDays))
+		headers = append(headers, fmt.Sprintf("Оценка за %d дн. (₽)", domain.DefaultStorageForecastDays))
 	}
+	headers = append(headers, fmt.Sprintf("Продажи всего за %s (шт)", daysLabel(windowDays)))
 	for range clusters {
 		headers = append(headers,
 			// Кластер уже подписан в полосе групп выше, поэтому в заголовках
 			// колонок его имя не повторяется — так шапка читается компактнее.
-			"Продажи за период FBS и FBO",
+			salesHeader,
 			"Остаток FBO",
 			"Поставка FBO",
 		)
@@ -500,24 +537,51 @@ func writeHeaders(
 	clusters []string,
 	columnCount int,
 	baseCount int,
+	windowDays int,
 ) error {
-	// Полоса групп: общий блок колонок и отдельный блок на каждый кластер.
-	bandCell, err := excelize.CoordinatesToCellName(1, groupRow)
+	baseBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "center", bold: true, size: headerFontSize}
+	totalBand := cellSpec{fill: colorTotalFill, font: colorTotalFont, align: "center", bold: true, size: headerFontSize}
+
+	// Артикул и остаток FBS — одиночные колонки, подписи группы у них нет:
+	// заливка нужна только ради ровной полосы.
+	for col := 1; col <= 2; col++ {
+		cell, err := excelize.CoordinatesToCellName(col, groupRow)
+		if err != nil {
+			return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
+		}
+		if err := applyStyle(file, styles, sheet, cell, cell, baseBand); err != nil {
+			return err
+		}
+	}
+
+	// «Хранение» — над колонками размещения, списаний и прогноза.
+	storageFrom, err := excelize.CoordinatesToCellName(3, groupRow)
 	if err != nil {
 		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
 	}
-	if err := file.SetCellValue(sheet, bandCell, "Товар · остаток · хранение"); err != nil {
+	storageTo, err := excelize.CoordinatesToCellName(baseCount-1, groupRow)
+	if err != nil {
+		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
+	}
+	if err := file.SetCellValue(sheet, storageFrom, "Хранение"); err != nil {
 		return fmt.Errorf("не удалось записать заголовок группы Excel: %w", err)
 	}
-	bandTo, err := excelize.CoordinatesToCellName(baseCount, groupRow)
+	if err := file.MergeCell(sheet, storageFrom, storageTo); err != nil {
+		return fmt.Errorf("не удалось объединить заголовок группы Excel: %w", err)
+	}
+	if err := applyStyle(file, styles, sheet, storageFrom, storageTo, baseBand); err != nil {
+		return err
+	}
+
+	// «Продажи всего» оформлена отдельно от кластеров.
+	totalCell, err := excelize.CoordinatesToCellName(baseCount, groupRow)
 	if err != nil {
 		return fmt.Errorf("не удалось определить ячейку Excel: %w", err)
 	}
-	if err := file.MergeCell(sheet, bandCell, bandTo); err != nil {
-		return fmt.Errorf("не удалось объединить заголовок группы Excel: %w", err)
+	if err := file.SetCellValue(sheet, totalCell, "Продажи"); err != nil {
+		return fmt.Errorf("не удалось записать заголовок группы Excel: %w", err)
 	}
-	baseBand := cellSpec{fill: colorBaseHeader, font: colorWhite, align: "left", bold: true, size: headerFontSize}
-	if err := applyStyle(file, styles, sheet, bandCell, bandTo, baseBand); err != nil {
+	if err := applyStyle(file, styles, sheet, totalCell, totalCell, totalBand); err != nil {
 		return err
 	}
 
@@ -556,7 +620,7 @@ func writeHeaders(
 		}
 	}
 
-	headers := buildHeaders(clusters, baseCount)
+	headers := buildHeaders(clusters, baseCount, windowDays)
 	headerValues := make([]interface{}, len(headers))
 	for i, header := range headers {
 		headerValues[i] = header
@@ -574,6 +638,9 @@ func writeHeaders(
 		switch {
 		case col == columnCount:
 			spec.fill = colorTitle
+		case col == baseCount:
+			spec.fill = colorTotalFill
+			spec.font = colorTotalFont
 		case col > baseCount:
 			spec.fill = paletteFor((col - baseCount - 1) / 3).header
 			spec.blockStart = (col-baseCount-1)%3 == 0
@@ -605,6 +672,16 @@ func buildColumnSpecs(clusters []string, columnCount, baseCount int) []cellSpec 
 	specs[5] = moneySpec
 	if baseCount == baseColumnsOzon {
 		specs[6] = moneySpec
+	}
+
+	// «Продажи всего» — штуки по всем кластерам и обеим схемам; оформлена
+	// отдельно от блоков кластеров.
+	specs[baseCount] = cellSpec{
+		fill:      colorTotalFill,
+		font:      colorTotalFont,
+		align:     "center",
+		bold:      true,
+		customFmt: "#,##0",
 	}
 
 	for i := range clusters {
@@ -652,6 +729,7 @@ func writeDataRows(
 		} else {
 			values = append(values, row.StorageForecast)
 		}
+		values = append(values, row.TotalPeriodSales)
 		for _, cluster := range clusters {
 			clusterData := row.ClusterData[cluster]
 			values = append(values, clusterData.PeriodSales, clusterData.StockFBO, clusterData.Supply)
@@ -713,30 +791,34 @@ func statusTint(status string) cellTint {
 }
 
 func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCount int) error {
-	// Узкие числовые колонки — 8; под деньги (D и E) отведено 10, чтобы суммы
-	// не обрезались; A, C и «Статус» шире — там длинный текст.
-	const narrowWidth = 8.0
-	widths := map[string]float64{"A": 24, "B": narrowWidth, "C": 20, "D": 10, "E": 10}
+	// Ширины подобраны под содержимое: артикул и размещение — текст, деньги —
+	// суммы, кластеры — числа. «Продажи всего» шире остальных колонок кластера
+	// из-за длинного заголовка.
+	widths := map[int]float64{1: 24, 2: 8, 3: 19.21, 4: 11.84, 5: 11.21}
 	if baseCount == baseColumnsOzon {
-		widths["F"] = narrowWidth
+		widths[6] = 12.74
 	}
-	for column, width := range widths {
+	widths[baseCount] = 12.63
+	for col, width := range widths {
+		column, err := excelize.ColumnNumberToName(col)
+		if err != nil {
+			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
+		}
 		if err := file.SetColWidth(sheetName, column, column, width); err != nil {
 			return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 		}
 	}
 
 	for i := range clusters {
-		start, err := excelize.ColumnNumberToName(baseCount + 1 + i*3)
-		if err != nil {
-			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
-		}
-		end, err := excelize.ColumnNumberToName(baseCount + 3 + i*3)
-		if err != nil {
-			return fmt.Errorf("не удалось определить колонку Excel: %w", err)
-		}
-		if err := file.SetColWidth(sheetName, start, end, narrowWidth); err != nil {
-			return fmt.Errorf("не удалось настроить ширину столбцов Excel: %w", err)
+		// Первая колонка блока — заказы, две следующие — остаток и поставка.
+		for offset, width := range []float64{12.63, 7.42, 7.42} {
+			column, err := excelize.ColumnNumberToName(baseCount + 1 + i*3 + offset)
+			if err != nil {
+				return fmt.Errorf("не удалось определить колонку Excel: %w", err)
+			}
+			if err := file.SetColWidth(sheetName, column, column, width); err != nil {
+				return fmt.Errorf("не удалось настроить ширину столбцов Excel: %w", err)
+			}
 		}
 	}
 
@@ -744,9 +826,7 @@ func setLayout(file *excelize.File, clusters []string, lastColumn string, baseCo
 		return fmt.Errorf("не удалось настроить ширину столбца Excel: %w", err)
 	}
 
-	// В узких колонках (8) заголовки переносятся на 3–4 строки, поэтому высота
-	// подобрана так, чтобы текст не обрезался.
-	for row, height := range map[int]float64{groupRow: 18, headerRow: 44} {
+	for row, height := range map[int]float64{groupRow: 16, headerRow: 25.2} {
 		if err := file.SetRowHeight(sheetName, row, height); err != nil {
 			return fmt.Errorf("не удалось настроить высоту строки Excel: %w", err)
 		}
@@ -809,8 +889,24 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 	}
 
 	if err := writeRow(
+		"ПРОДАЖИ ВСЕГО",
+		"Колонка «Продажи всего за … (шт)» — все заказы товара за окно: FBO и FBS вместе, по всем кластерам назначения, а не только по выбранным",
+		section,
+	); err != nil {
+		return err
+	}
+	if err := writeRow(
+		"Продажи всего",
+		"Оформлена отдельной серой колонкой: она не относится ни к одному кластеру, поэтому и не в гамме кластеров",
+		tint(plain, cellTint{fill: colorTotalFill, font: colorTotalFont}, true),
+	); err != nil {
+		return err
+	}
+
+	row++
+	if err := writeRow(
 		"КЛАСТЕРЫ — ЦВЕТ БЛОКА КОЛОНОК",
-		"Продажи за период FBS и FBO · Остаток FBO · Поставка FBO. Продажи считаются по кластеру назначения (куда уехал товар) и включают FBO + FBS",
+		"Продажи за окно FBS и FBO · Остаток FBO · Поставка FBO. Продажи кластера считаются по кластеру назначения (куда уехал товар) и включают FBO + FBS",
 		section,
 	); err != nil {
 		return err
@@ -818,13 +914,17 @@ func writeLegend(file *excelize.File, styles *styleCache, clusters []string, has
 	for i, cluster := range clusters {
 		palette := paletteFor(i)
 		label := cellSpec{fill: palette.header, font: colorWhite, align: "left", bold: true}
-		if err := writeRow(cluster, "Продажи за период FBS и FBO · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
+		if err := writeRow(cluster, "Продажи за окно FBS и FBO · Остаток FBO · Поставка FBO (акцентный цвет)", label); err != nil {
 			return err
 		}
 	}
 
 	row++
-	if err := writeRow("ПЛАТНОЕ ХРАНЕНИЕ FBO", "Подсветка ячейки в колонке «Размещение FBO»", section); err != nil {
+	if err := writeRow(
+		"ПЛАТНОЕ ХРАНЕНИЕ FBO",
+		"Подпись «Хранение» в полосе групп стоит над размещением, списаниями и прогнозом; ниже — подсветка колонки «Размещение FBO»",
+		section,
+	); err != nil {
 		return err
 	}
 	for _, item := range []struct {
