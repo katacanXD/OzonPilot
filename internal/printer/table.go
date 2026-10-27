@@ -3,6 +3,7 @@ package printer
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -37,16 +38,25 @@ func PrintSummaryTable(rows []domain.ProductSupplyRow, selectedClusters []string
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	hasOzonForecast := false
+	hasStock := false
 	for _, r := range rows {
 		if r.HasOzonStorageForecast {
 			hasOzonForecast = true
-			break
+		}
+		if r.ExternalStock != nil {
+			hasStock = true
 		}
 	}
 
 	var header, separator strings.Builder
-	header.WriteString("АРТИКУЛ\tFBS\tРАЗМЕЩЕНИЕ\tСПИСАНО (₽)")
-	separator.WriteString("-------\t---\t----------\t-----------")
+	header.WriteString("АРТИКУЛ")
+	separator.WriteString("-------")
+	if hasStock {
+		header.WriteString("\tНАЛИЧИЕ")
+		separator.WriteString("\t-------")
+	}
+	header.WriteString("\tFBS\tРАЗМЕЩЕНИЕ\tСПИСАНО (₽)")
+	separator.WriteString("\t---\t----------\t-----------")
 	if hasOzonForecast {
 		header.WriteString("\tПРОГНОЗ OZON 28 ДН (₽)\tДО КОНЦА МЕСЯЦА (₽)")
 		separator.WriteString("\t--------------------\t--------------------")
@@ -71,7 +81,11 @@ func PrintSummaryTable(rows []domain.ProductSupplyRow, selectedClusters []string
 		if placement == "" {
 			placement = "-"
 		}
-		fmt.Fprintf(&line, "%s\t%d\t%s\t%.2f", truncate(r.OfferID, 30), r.CurrentFBS, truncate(placement, 22), r.StorageCost)
+		fmt.Fprintf(&line, "%s", truncate(r.OfferID, 30))
+		if hasStock {
+			fmt.Fprintf(&line, "\t%s", truncate(externalText(r.ExternalStock), 12))
+		}
+		fmt.Fprintf(&line, "\t%d\t%s\t%.2f", r.CurrentFBS, truncate(placement, 22), r.StorageCost)
 		if hasOzonForecast {
 			fmt.Fprintf(&line, "\t%.2f\t%.2f", r.OzonStorageForecast28, r.OzonStorageForecastMonth)
 		} else {
@@ -95,4 +109,17 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max-3]) + "..."
+}
+
+// externalText — ячейка наличия для консольной таблицы.
+func externalText(cell *domain.ExternalStockCell) string {
+	switch {
+	case cell == nil:
+		return "-"
+	case cell.Text != "":
+		return cell.Text
+	case cell.Qty != nil:
+		return strconv.Itoa(*cell.Qty)
+	}
+	return "-"
 }

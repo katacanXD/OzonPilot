@@ -43,7 +43,7 @@ func TestExportToExcelColumns(t *testing.T) {
 	}
 
 	clusters := []string{"Москва", "Санкт-Петербург"}
-	filePath, err := ExportToExcel(rows, clusters, "", 28)
+	filePath, err := ExportToExcel(rows, clusters, Notes{}, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestExportToExcelColors(t *testing.T) {
 	}
 
 	clusters := []string{"Москва", "Санкт-Петербург"}
-	filePath, err := ExportToExcel(rows, clusters, "", 28)
+	filePath, err := ExportToExcel(rows, clusters, Notes{}, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestExportToExcelOzonForecastColumns(t *testing.T) {
 		},
 	}
 
-	filePath, err := ExportToExcel(rows, []string{"Москва"}, "", 28)
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, Notes{}, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestExportToExcelPlacementWarning(t *testing.T) {
 	}}
 	note := "данные о размещении Ozon не получены (таймаут отчета)"
 
-	filePath, err := ExportToExcel(rows, []string{"Москва"}, note, 28)
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, Notes{Placement: note}, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestExportToExcelLayout(t *testing.T) {
 		ClusterData:   map[string]domain.ClusterStockData{"Москва": {PeriodSales: 1, StockFBO: 3}},
 	}}
 
-	filePath, err := ExportToExcel(rows, []string{"Москва"}, "", 28)
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, Notes{}, 28)
 	if err != nil {
 		t.Fatalf("ExportToExcel failed: %v", err)
 	}
@@ -483,4 +483,127 @@ func cellFill(t *testing.T, f *excelize.File, cell string) string {
 		return ""
 	}
 	return strings.ToUpper(style.Fill.Color[0])
+}
+
+func TestLayoutFor(t *testing.T) {
+	tests := []struct {
+		name            string
+		stock, forecast bool
+		want            columnLayout
+	}{
+		{
+			"без наличия, оценка",
+			false, false,
+			columnLayout{fbs: 2, placement: 3, cost: 4, forecast1: 5, total: 6},
+		},
+		{
+			"без наличия, прогноз Ozon",
+			false, true,
+			columnLayout{fbs: 2, placement: 3, cost: 4, forecast1: 5, forecast2: 6, total: 7},
+		},
+		{
+			"с наличием, оценка",
+			true, false,
+			columnLayout{external: 2, fbs: 3, placement: 4, cost: 5, forecast1: 6, total: 7},
+		},
+		{
+			"с наличием, прогноз Ozon",
+			true, true,
+			columnLayout{external: 2, fbs: 3, placement: 4, cost: 5, forecast1: 6, forecast2: 7, total: 8},
+		},
+	}
+
+	for _, tt := range tests {
+		if got := layoutFor(tt.stock, tt.forecast); got != tt.want {
+			t.Errorf("%s: получено %+v, ожидалось %+v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestExportToExcelExternalStock(t *testing.T) {
+	qty := 7
+	rows := []domain.ProductSupplyRow{
+		{
+			OfferID: "A-1", Name: "Первый", CurrentFBS: 2, OverallStatus: domain.StatusOK, Priority: 4,
+			ExternalStock: &domain.ExternalStockCell{Qty: &qty},
+			ClusterData:   map[string]domain.ClusterStockData{"Москва": {PeriodSales: 10, StockFBO: 3, Supply: 2}},
+		},
+		{
+			OfferID: "A-2", Name: "Второй", OverallStatus: domain.StatusOK, Priority: 4,
+			ExternalStock: &domain.ExternalStockCell{Text: "1 уценка"},
+			ClusterData:   map[string]domain.ClusterStockData{"Москва": {}},
+		},
+		{
+			OfferID: "A-3", Name: "Третий", OverallStatus: domain.StatusOK, Priority: 4,
+			ClusterData: map[string]domain.ClusterStockData{"Москва": {}},
+		},
+	}
+
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, Notes{}, 28)
+	if err != nil {
+		t.Fatalf("ExportToExcel failed: %v", err)
+	}
+	defer func() {
+		_ = os.Remove(filePath)
+		_ = os.Remove(filepath.Dir(filePath))
+	}()
+
+	f, err := excelize.OpenFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to open generated excel: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	allRows, err := f.GetRows(sheetName)
+	if err != nil {
+		t.Fatalf("failed to read rows: %v", err)
+	}
+	header := allRows[headerRow-1]
+	if len(header) < 3 || header[1] != `Наличие "Офис"` || header[2] != "Остаток FBS" {
+		t.Fatalf("наличие должно стоять перед FBS: %v", header)
+	}
+	if header[len(header)-1] != "Статус" {
+		t.Errorf("последняя колонка = %q, ожидался «Статус»", header[len(header)-1])
+	}
+
+	if got := allRows[firstDataRow-1][1]; got != "7" {
+		t.Errorf("числовое наличие записано как %q, ожидалось «7»", got)
+	}
+	if got := allRows[firstDataRow][1]; got != "1 уценка" {
+		t.Errorf("пояснение записано как %q, ожидалось «1 уценка»", got)
+	}
+	if got := allRows[firstDataRow+1][1]; got != "" {
+		t.Errorf("для товара вне таблицы ячейка должна быть пустой, получено %q", got)
+	}
+}
+
+// Без данных о наличии раскладка обязана остаться прежней.
+func TestExportToExcelWithoutExternalStock(t *testing.T) {
+	rows := []domain.ProductSupplyRow{{
+		OfferID: "A-1", Name: "Первый", OverallStatus: domain.StatusOK, Priority: 4,
+		ClusterData: map[string]domain.ClusterStockData{"Москва": {}},
+	}}
+
+	filePath, err := ExportToExcel(rows, []string{"Москва"}, Notes{}, 28)
+	if err != nil {
+		t.Fatalf("ExportToExcel failed: %v", err)
+	}
+	defer func() {
+		_ = os.Remove(filePath)
+		_ = os.Remove(filepath.Dir(filePath))
+	}()
+
+	f, err := excelize.OpenFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to open generated excel: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	allRows, err := f.GetRows(sheetName)
+	if err != nil {
+		t.Fatalf("failed to read rows: %v", err)
+	}
+	if got := allRows[headerRow-1][1]; got != "Остаток FBS" {
+		t.Errorf("без наличия вторая колонка = %q, ожидался «Остаток FBS»", got)
+	}
 }
