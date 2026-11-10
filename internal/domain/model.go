@@ -14,6 +14,14 @@ type ClusterStockData struct {
 	Supply      int     // Рекомендация к поставке в этот кластер
 }
 
+// ExternalStockCell — ячейка «Наличие "Офис"» из внешней таблицы продавца.
+// Число хранится отдельно, чтобы в Excel оно осталось числом; пояснения
+// («1 уценка», «3 битых») показываются как текст.
+type ExternalStockCell struct {
+	Qty  *int
+	Text string
+}
+
 type ProductSupplyRow struct {
 	OfferID       string
 	Name          string
@@ -23,7 +31,10 @@ type ProductSupplyRow struct {
 	TotalSupply   int                         // Суммарная поставка по всем кластерам
 	OverallStatus string                      // Общий статус
 	Priority      int                         // Приоритет срочности
-	PlacementInfo string                      // Размещение FBO ("Платно", "Бесплатно (до ДД.ММ.ГГГГ)", etc.)
+	// ExternalStock — наличие из Google-таблицы (колонка «Офис»); nil — строки
+	// в таблице нет. На расчёт поставок не влияет: это справочные данные.
+	ExternalStock *ExternalStockCell
+	PlacementInfo string // Размещение FBO ("Платно", "Бесплатно (до ДД.ММ.ГГГГ)", etc.)
 	// TotalFBOStock — остаток на всех складах Ozon (не только в выбранных
 	// кластерах): хранение начисляется за весь остаток, поэтому прогноз
 	// считается от него.

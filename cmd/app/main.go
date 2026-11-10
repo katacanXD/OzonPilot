@@ -14,6 +14,7 @@ import (
 	"CLIForOZON/internal/config"
 	"CLIForOZON/internal/domain"
 	"CLIForOZON/internal/printer"
+	"CLIForOZON/internal/stocktable"
 )
 
 const defaultLeadTimeDays = 3.0
@@ -45,6 +46,7 @@ func main() {
 	reportTimeoutMin := flag.Int("report-timeout", 5, "Сколько минут ждать готовности отчета Ozon о стоимости размещения")
 	debugFlag := flag.Bool("debug", false, "Включить подробный вывод отладки")
 	debugOfferFlag := flag.String("debug-offer", "", "Показать все отправления указанного артикула за 90 дней")
+	askStockFlag := flag.Bool("ask-stock", false, "Спросить ссылку на таблицу наличия заново")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -98,6 +100,8 @@ func main() {
 	var rows []domain.ProductSupplyRow
 	var placementData map[string]client.PlacementItemData
 	var placementErr error
+	var stock *stocktable.Table
+	stockNote := ""
 	now := time.Now()
 
 	// Загрузка локального файла отчета о размещении при передаче флага
@@ -113,6 +117,9 @@ func main() {
 
 	if *filePath != "" {
 		slog.Info("Запуск в Offline режиме", "file", *filePath)
+		if *askStockFlag {
+			slog.Warn("-ask-stock не действует в offline-режиме: таблица наличия не загружается")
+		}
 		var err error
 		rows, err = client.FetchProductsFromJSON(*filePath)
 		if err != nil {
@@ -175,6 +182,16 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Вопрос про таблицу наличия задаём один раз: при первом запуске (в
+		// config.yaml ещё нет stock_prompted) или по флагу -ask-stock. В
+		// неинтерактивном запуске не спрашиваем и не запоминаем отказ.
+		if *askStockFlag || (!cfg.StockPrompted && cfg.StockURL == "" && stdinIsTerminal()) {
+			if err := config.AskStockURL(cfg, os.Stdin, os.Stdout); err != nil {
+				slog.Error("Ошибка настройки таблицы наличия", "err", err)
+				os.Exit(1)
+			}
+		}
+
 		// Сохраняем выбранные кластеры в config.yaml
 		if *clustersFlag != "" && cfg.Clusters != *clustersFlag {
 			cfg.Clusters = *clustersFlag
@@ -200,6 +217,19 @@ func main() {
 				slog.Warn("Не удалось автоматически получить отчет о стоимости размещения через API (отчет будет сформирован без данных о платном хранении)", "err", pErr)
 			} else {
 				slog.Info("Отчет о стоимости размещения успешно получен из Ozon API", "позиций", len(placementData))
+			}
+		}
+
+		// Таблица наличия — справочные данные: сбой не должен ронять отчёт,
+		// поэтому ошибка уходит в заметку на листе «Общая информация».
+		if cfg.StockURL != "" {
+			t, loadErr := stocktable.Load(ctx, cfg.StockURL)
+			if loadErr != nil {
+				slog.Warn("Не удалось загрузить таблицу наличия", "err", loadErr)
+				stockNote = "наличие из таблицы не загружено: " + shortError(loadErr)
+			} else {
+				stock = t
+				slog.Info("Таблица наличия загружена")
 			}
 		}
 
@@ -241,6 +271,17 @@ func main() {
 
 			rows = append(rows, row)
 		}
+
+		if stock != nil {
+			matched := stock.Apply(rows)
+			if matched == 0 {
+				// Скорее всего, изменился лист: пустая колонка хуже заметки.
+				stockNote = "наличие из таблицы не загружено: ни один товар не сопоставлен"
+				slog.Warn("Таблица наличия: ни один товар не сопоставлен")
+			} else {
+				slog.Info("Наличие из таблицы сопоставлено", "товаров", matched, "в_отчёте", len(rows))
+			}
+		}
 	}
 
 	slog.Info("Формирование отчета для кластеров", "clusters", selectedClusters)
@@ -262,12 +303,21 @@ func main() {
 	// Чтобы вернуть таблицу в консоль, раскомментируйте вызов ниже.
 	// printer.PrintSummaryTable(rows, selectedClusters)
 
-	reportPath, err := printer.ExportToExcel(rows, selectedClusters, placementNote, windowDays)
+	reportPath, err := printer.ExportToExcel(rows, selectedClusters, printer.Notes{
+		Placement: placementNote,
+		Stock:     stockNote,
+	}, windowDays)
 	if err != nil {
 		slog.Error("Не удалось создать Excel-отчет", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("Excel-отчет сохранен", "file", reportPath)
+}
+
+// stdinIsTerminal сообщает, можно ли задать вопрос: в CI и пайпах stdin — не терминал.
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 // placementReportHasForecast сообщает, есть ли в отчете прогноз Ozon: он

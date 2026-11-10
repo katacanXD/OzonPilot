@@ -26,6 +26,10 @@ type AppConfig struct {
 	WindowDays int    `mapstructure:"prodazhi"`
 	TargetDays int    `mapstructure:"postavka"`
 	Clusters   string `mapstructure:"clusters"`
+	// StockURL — адрес CSV Google-таблицы с наличием; пусто — колонки нет.
+	StockURL string `mapstructure:"stock_url"`
+	// StockPrompted — вопрос о наличии уже задан (ссылка или отказ), не спрашиваем.
+	StockPrompted bool `mapstructure:"stock_prompted"`
 }
 
 func GetConfigDir() (string, error) {
@@ -90,6 +94,8 @@ func SaveConfig(cfg *AppConfig) error {
 	viper.Set("prodazhi", cfg.WindowDays)
 	viper.Set("postavka", cfg.TargetDays)
 	viper.Set("clusters", cfg.Clusters)
+	viper.Set("stock_url", cfg.StockURL)
+	viper.Set("stock_prompted", cfg.StockPrompted)
 
 	if err := viper.WriteConfig(); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
